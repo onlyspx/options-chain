@@ -1,0 +1,314 @@
+---
+id: public-dot-com
+name: public.com
+description: Interact with your Public.com brokerage account using the Public.com API. Able to view portfolio, get stock quotes, place trades, and get account updates.
+env: ['PUBLIC_COM_SECRET', 'PUBLIC_COM_ACCOUNT_ID']
+license: Apache-2.0
+metadata:
+  author: public.com
+  category: "Finance"
+  tags: ["investing", "stocks", "crypto", "options", public-com"]
+  version: "1.0"
+
+# ClawHub Marketplace Display
+display:
+  icon: "📈"
+  icon_url: "https://raw.githubusercontent.com/PublicDotCom/claw-skill-public-dot-com/main/assets/logo.png"
+  color: "#000000"
+---
+
+# Public.com Account Manager
+This skill allows users to interact with their Public.com brokerage account.
+
+## Prerequisites
+The `publicdotcom-py` SDK is required. It will be **auto-installed** on first run, or you can install manually:
+```bash
+pip install publicdotcom-py
+```
+
+## Configuration
+
+### API Secret (Required)
+If the environment variable `PUBLIC_COM_SECRET` is not set:
+- Tell the user: "I need your Public.com API Secret. You can find this in your Public.com developer settings at public.com/api/docs."
+- Once provided, save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_SECRET [VALUE]`
+
+### Default Account ID (Optional)
+If the user wants to set a default account for all requests:
+- Save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_ACCOUNT_ID [VALUE]`
+- This eliminates the need to specify `--account-id` on each command.
+
+## Available Commands
+
+### Get Accounts
+When the user asks to "get my accounts", "list accounts", or "show my Public.com accounts":
+1. Execute `python3 scripts/get_accounts.py`
+2. Report the account IDs and types back to the user.
+
+### Get Portfolio
+When the user asks to "get my portfolio", "show my holdings", or "what's in my account":
+1. If `PUBLIC_COM_ACCOUNT_ID` is set, execute `python3 scripts/get_portfolio.py` (no arguments needed).
+2. If not set and you don't know the user's account ID, first run `get_accounts.py` to retrieve it.
+3. Execute `python3 scripts/get_portfolio.py --account-id [ACCOUNT_ID]`
+4. Report the portfolio summary (equity, buying power, positions) back to the user.
+
+### Get Orders
+When the user asks to "get my orders", "show my orders", "active orders", or "pending orders":
+1. If `PUBLIC_COM_ACCOUNT_ID` is set, execute `python3 scripts/get_orders.py` (no arguments needed).
+2. If not set and you don't know the user's account ID, first run `get_accounts.py` to retrieve it.
+3. Execute `python3 scripts/get_orders.py --account-id [ACCOUNT_ID]`
+4. Report the active orders with their details (symbol, side, type, status, quantity, prices) back to the user.
+
+### Get Quotes
+When the user asks to "get a quote", "what's the price of", "check the price", or wants stock/crypto prices:
+
+**Format:** `SYMBOL` or `SYMBOL:TYPE` (TYPE defaults to EQUITY)
+
+**Examples:**
+
+Single equity quote (uses default account):
+```bash
+python3 scripts/get_quotes.py AAPL
+```
+
+Multiple equity quotes:
+```bash
+python3 scripts/get_quotes.py AAPL GOOGL MSFT
+```
+
+Mixed instrument types:
+```bash
+python3 scripts/get_quotes.py AAPL:EQUITY BTC:CRYPTO
+```
+
+Option quote:
+```bash
+python3 scripts/get_quotes.py AAPL260320C00280000:OPTION
+```
+
+With explicit account ID:
+```bash
+python3 scripts/get_quotes.py AAPL --account-id YOUR_ACCOUNT_ID
+```
+
+**Workflow:**
+1. If `PUBLIC_COM_ACCOUNT_ID` is not set and you don't know the user's account ID, first run `get_accounts.py` to retrieve it.
+2. Parse the user's request for symbol(s) and type(s).
+3. Execute: `python3 scripts/get_quotes.py [SYMBOLS...] [--account-id ACCOUNT_ID]`
+4. Report the quote information (last price, bid, ask, volume, etc.) back to the user.
+
+### Get Instruments
+When the user asks to "list instruments", "what can I trade", "show available stocks", or wants to see tradeable instruments:
+
+**Optional parameters:**
+- `--type`: Instrument types to filter (EQUITY, OPTION, CRYPTO). Defaults to EQUITY.
+- `--trading`: Trading status filter (BUY_AND_SELL, BUY_ONLY, SELL_ONLY, NOT_TRADABLE)
+- `--search`: Search by symbol or name
+- `--limit`: Limit number of results
+
+**Examples:**
+
+List all equities (default):
+```bash
+python3 scripts/get_instruments.py
+```
+
+List equities and crypto:
+```bash
+python3 scripts/get_instruments.py --type EQUITY CRYPTO
+```
+
+List only tradeable instruments:
+```bash
+python3 scripts/get_instruments.py --type EQUITY --trading BUY_AND_SELL
+```
+
+Search for specific instruments:
+```bash
+python3 scripts/get_instruments.py --search AAPL
+```
+
+Limit results:
+```bash
+python3 scripts/get_instruments.py --limit 50
+```
+
+**Workflow:**
+1. Parse the user's request for any filters (type, trading status, search term).
+2. Execute: `python3 scripts/get_instruments.py [OPTIONS]`
+3. Report the available instruments with their trading status back to the user.
+
+### Get Option Expirations
+**This skill CAN list all available option expiration dates for any symbol.**
+
+When the user asks to "get option expirations", "list expirations", "show expiration dates", "when do options expire", or wants to know what option expiration dates are available for a stock:
+1. Execute `python3 scripts/get_option_expirations.py [SYMBOL]`
+2. Report the available expiration dates to the user.
+
+Common user phrasings:
+- "get option expirations for AAPL"
+- "what are the option expiration dates for Google"
+- "when do TSLA options expire"
+- "show me expiration dates for SPY options"
+- "list available expirations for MSFT"
+- "can you get the options expirations for Apple"
+- "what options dates are available for NVDA"
+
+**Required parameters:**
+- `symbol`: The underlying symbol (e.g., AAPL, GOOGL, TSLA, SPY). Convert company names to ticker symbols.
+
+**Examples:**
+
+```bash
+python3 scripts/get_option_expirations.py AAPL
+python3 scripts/get_option_expirations.py GOOGL
+python3 scripts/get_option_expirations.py TSLA
+python3 scripts/get_option_expirations.py SPY
+```
+
+**Common company name to symbol mappings:**
+- Apple = AAPL
+- Google/Alphabet = GOOGL
+- Tesla = TSLA
+- Microsoft = MSFT
+- Amazon = AMZN
+- Nvidia = NVDA
+- Meta/Facebook = META
+
+**Workflow:**
+1. Extract the symbol from the user's request. Convert company names to ticker symbols.
+2. Execute: `python3 scripts/get_option_expirations.py [SYMBOL]`
+3. Report the available expiration dates to the user.
+4. If they want to see the option chain next, use the expiration date with `get_option_chain.py`.
+
+### Get Option Greeks
+When the user asks for "option greeks", "delta", "gamma", "theta", "vega", or wants to analyze options:
+
+**Required parameters:**
+- One or more OSI option symbols (e.g., AAPL260116C00270000)
+
+**OSI Symbol Format:**
+```
+AAPL260116C00270000
+^^^^------^--------
+|   |     |  Strike price ($270.00)
+|   |     Call (C) or Put (P)
+|   Expiration (Jan 16, 2026 = 260116)
+Underlying symbol
+```
+
+**Examples:**
+
+Single option:
+```bash
+python3 scripts/get_option_greeks.py AAPL260116C00270000
+```
+
+Multiple options (e.g., call and put at same strike):
+```bash
+python3 scripts/get_option_greeks.py AAPL260116C00270000 AAPL260116P00270000
+```
+
+**Workflow:**
+1. Help the user construct the OSI symbol if they provide expiration, strike, and call/put separately.
+2. Execute: `python3 scripts/get_option_greeks.py [OSI_SYMBOLS...]`
+3. Report the greeks (Delta, Gamma, Theta, Vega, Rho, IV) back to the user with explanations if needed.
+
+### Get Option Chain
+When the user asks for "option chain", "options for AAPL", "show me calls and puts", or wants to see available options:
+
+**Required parameters:**
+- `symbol`: The underlying symbol (e.g., AAPL)
+
+**Optional parameters:**
+- `--expiration`: Expiration date (YYYY-MM-DD). If not provided, uses the nearest expiration.
+- `--list-expirations`: List available expiration dates instead of fetching the chain.
+
+**Examples:**
+
+List available expirations:
+```bash
+python3 scripts/get_option_chain.py AAPL --list-expirations
+```
+
+Get option chain for nearest expiration:
+```bash
+python3 scripts/get_option_chain.py AAPL
+```
+
+Get option chain for specific expiration:
+```bash
+python3 scripts/get_option_chain.py AAPL --expiration 2026-03-20
+```
+
+**Workflow:**
+1. If the user doesn't specify an expiration, first run with `--list-expirations` to show available dates.
+2. Execute: `python3 scripts/get_option_chain.py [SYMBOL] [--expiration DATE]`
+3. Report the calls and puts with strike prices, bid/ask, last price, volume, and open interest.
+
+### Set Default Account
+When the user asks to "set my default account" or "use account X as default":
+1. Save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_ACCOUNT_ID [ACCOUNT_ID]`
+2. Confirm to the user that future requests will use this account by default.
+
+### Place Order
+When the user asks to "buy", "sell", "place an order", or "trade":
+
+**Required parameters:**
+- `--symbol`: The ticker symbol (e.g., AAPL, BTC)
+- `--type`: EQUITY, OPTION, or CRYPTO
+- `--side`: BUY or SELL
+- `--order-type`: LIMIT, MARKET, STOP, or STOP_LIMIT
+- `--quantity` OR `--amount`: Number of shares OR notional dollar amount
+
+**Conditional parameters:**
+- `--limit-price`: Required for LIMIT and STOP_LIMIT orders
+- `--stop-price`: Required for STOP and STOP_LIMIT orders
+- `--session`: CORE (default) or EXTENDED for equity orders
+- `--open-close`: OPEN or CLOSE for options orders
+
+**Examples:**
+
+Buy 10 shares of AAPL at limit price $227.50:
+```bash
+python3 scripts/place_order.py --symbol AAPL --type EQUITY --side BUY --order-type LIMIT --quantity 10 --limit-price 227.50
+```
+
+Sell $500 worth of AAPL at market price:
+```bash
+python3 scripts/place_order.py --symbol AAPL --type EQUITY --side SELL --order-type MARKET --amount 500
+```
+
+Buy crypto with extended hours:
+```bash
+python3 scripts/place_order.py --symbol BTC --type CRYPTO --side BUY --order-type MARKET --amount 100
+```
+
+**Workflow:**
+1. Gather all required information from the user (symbol, side, order type, quantity/amount, prices if needed).
+2. Confirm the order details with the user before executing.
+3. Execute: `python3 scripts/place_order.py [OPTIONS]`
+4. Report the order ID and confirmation back to the user.
+5. Remind user that order placement is asynchronous - they can check status later.
+
+### Cancel Order
+When the user asks to "cancel order", "cancel my order", or wants to cancel a specific order:
+
+**Required parameters:**
+- `--order-id`: The order ID to cancel
+
+**Example:**
+```bash
+python3 scripts/cancel_order.py --order-id 345d3e58-5ba3-401a-ac89-1b756332cc94
+```
+
+With explicit account ID:
+```bash
+python3 scripts/cancel_order.py --order-id 345d3e58-5ba3-401a-ac89-1b756332cc94 --account-id YOUR_ACCOUNT_ID
+```
+
+**Workflow:**
+1. If the user doesn't provide an order ID, first run `get_orders.py` to show them their active orders.
+2. Confirm with the user which order they want to cancel.
+3. Execute: `python3 scripts/cancel_order.py --order-id [ORDER_ID]`
+4. Inform the user that cancellation is asynchronous - they should check order status to confirm.
