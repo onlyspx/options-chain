@@ -1,23 +1,19 @@
 ---
 id: public-dot-com
 name: public.com
-description: Interact with your Public.com brokerage account using the Public.com API. Able to view portfolio, get stock quotes, place trades, and get account updates.
+description: Interact with your Public.com brokerage account using the Public.com API. Able to view portfolio, get stock quotes, place trades, and get account updates. To create a Public.com account head to public.com/signup.
 env: ['PUBLIC_COM_SECRET', 'PUBLIC_COM_ACCOUNT_ID']
 license: Apache-2.0
 metadata:
   author: public.com
   category: "Finance"
-  tags: ["investing", "stocks", "crypto", "options", public-com"]
+  tags: ["investing", "stocks", "crypto", "options", public", "finance"]
   version: "1.0"
-
-# ClawHub Marketplace Display
-display:
-  icon: "📈"
-  icon_url: "https://raw.githubusercontent.com/PublicDotCom/claw-skill-public-dot-com/main/assets/logo.png"
-  color: "#000000"
 ---
 
 # Public.com Account Manager
+> **Disclaimer:** For illustrative and informational purposes only. Not investment advice or recommendations.
+
 This skill allows users to interact with their Public.com brokerage account.
 
 ## Prerequisites
