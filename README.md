@@ -12,6 +12,7 @@ For illustrative and informational purposes only. Not investment advice or recom
 
 There are a few prerequisites needed to get started:
 
+- **Python 3.8+** and **pip** — Required in your OpenClaw environment. The skill's scripts use the `publicdotcom-py` SDK which will be auto-installed on first run.
 - **Public.com account** — Create one at https://public.com/signup
 - **Public.com API key** — Once you create your Public.com brokerage account, get an API key at https://public.com/settings/v2/api
 - **AI model API key** — During our testing we used Anthropic, but OpenClaw allows you to choose from a few of your liking
@@ -50,5 +51,6 @@ Some requests will need an account number. You can ask the skill to list your di
 - How is my portfolio doing today?
 - Can you get me the options chain for Nvidia for options expiring tomorrow?
 - Can you get me the current quotes for Apple, Google, and Microsoft?
+- Can you get my account history and list out and the deposits I've made?
 - Set up a job to monitor the price of Bitcoin every 30 minutes. If the price is below $75K, buy $100 worth of it. If you are in a position and the price goes above $80K, sell it. All orders are market orders and only be in one position at a time. Run indefinitely.
 - Get the options chain for Apple option contracts expiring Feb 18th. I want to open a call credit spread. Determine the best options contracts to do this with based on contract liquidity and max premium for cost.

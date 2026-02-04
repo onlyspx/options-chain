@@ -2,14 +2,13 @@ import argparse
 import os
 import subprocess
 import sys
-import uuid
 from decimal import Decimal
 
 try:
     from public_api_sdk import (
         PublicApiClient,
         PublicApiClientConfiguration,
-        OrderRequest,
+        PreflightRequest,
         OrderInstrument,
         InstrumentType,
         OrderSide,
@@ -26,7 +25,7 @@ except ImportError:
     from public_api_sdk import (
         PublicApiClient,
         PublicApiClientConfiguration,
-        OrderRequest,
+        PreflightRequest,
         OrderInstrument,
         InstrumentType,
         OrderSide,
@@ -39,7 +38,7 @@ except ImportError:
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 
 
-def place_order(
+def perform_preflight(
     symbol,
     instrument_type,
     side,
@@ -53,6 +52,23 @@ def place_order(
     time_in_force=None,
     account_id=None,
 ):
+    """
+    Perform a preflight calculation to estimate the cost and account impact of an order.
+
+    Args:
+        symbol: The ticker symbol (e.g., AAPL, BTC, NVDA260213P00177500)
+        instrument_type: EQUITY, OPTION, or CRYPTO
+        side: BUY or SELL
+        order_type: LIMIT, MARKET, STOP, or STOP_LIMIT
+        quantity: Number of shares/contracts
+        amount: Notional dollar amount (alternative to quantity)
+        limit_price: Limit price for LIMIT/STOP_LIMIT orders
+        stop_price: Stop price for STOP/STOP_LIMIT orders
+        session: CORE or EXTENDED (for equity orders)
+        open_close: OPEN or CLOSE (for option orders)
+        time_in_force: DAY or GTC
+        account_id: Account ID (optional if PUBLIC_COM_ACCOUNT_ID is set)
+    """
     secret = os.getenv("PUBLIC_COM_SECRET")
     account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
 
@@ -114,9 +130,8 @@ def place_order(
             config=PublicApiClientConfiguration(default_account_number=account_id),
         )
 
-        # Build order request
-        order_kwargs = {
-            "order_id": str(uuid.uuid4()),
+        # Build preflight request
+        preflight_kwargs = {
             "instrument": OrderInstrument(
                 symbol=symbol,
                 type=instrument_type_map[instrument_type],
@@ -128,54 +143,92 @@ def place_order(
 
         # Add quantity or amount
         if quantity is not None:
-            order_kwargs["quantity"] = quantity
+            preflight_kwargs["quantity"] = Decimal(str(quantity))
         if amount is not None:
-            order_kwargs["amount"] = Decimal(str(amount))
+            preflight_kwargs["amount"] = Decimal(str(amount))
 
         # Add limit price if applicable
         if limit_price is not None:
-            order_kwargs["limit_price"] = Decimal(str(limit_price))
+            preflight_kwargs["limit_price"] = Decimal(str(limit_price))
 
         # Add stop price if applicable
         if stop_price is not None:
-            order_kwargs["stop_price"] = Decimal(str(stop_price))
+            preflight_kwargs["stop_price"] = Decimal(str(stop_price))
 
         # Add session for equity orders
         if session and instrument_type == "EQUITY":
-            order_kwargs["equity_market_session"] = session_map[session]
+            preflight_kwargs["equity_market_session"] = session_map[session]
 
         # Add open/close indicator for options
         if open_close and instrument_type == "OPTION":
-            order_kwargs["open_close_indicator"] = open_close_map[open_close]
+            preflight_kwargs["open_close_indicator"] = open_close_map[open_close]
 
-        order_request = OrderRequest(**order_kwargs)
-        order_response = client.place_order(order_request)
+        preflight_request = PreflightRequest(**preflight_kwargs)
+        preflight_response = client.perform_preflight_calculation(preflight_request)
 
-        print("Order Placed Successfully!")
-        print("-" * 40)
-        print(f"Order ID: {order_response.order_id}")
-        print(f"Symbol: {symbol}")
-        print(f"Side: {side}")
-        print(f"Type: {order_type}")
-        print(f"Time In Force: {time_in_force or 'DAY'}")
+        print("=" * 70)
+        print("PREFLIGHT CALCULATION RESULT")
+        print("=" * 70)
+
+        # Order details
+        print("\n  ORDER DETAILS:")
+        print(f"    Symbol: {symbol}")
+        print(f"    Type: {instrument_type}")
+        print(f"    Side: {side}")
+        print(f"    Order Type: {order_type}")
+        print(f"    Time In Force: {time_in_force or 'DAY'}")
         if quantity is not None:
-            print(f"Quantity: {quantity} shares")
+            print(f"    Quantity: {quantity}")
         if amount is not None:
-            print(f"Amount: ${amount}")
+            print(f"    Amount: ${amount}")
         if limit_price is not None:
-            print(f"Limit Price: ${limit_price}")
+            print(f"    Limit Price: ${limit_price}")
         if stop_price is not None:
-            print(f"Stop Price: ${stop_price}")
-        print("-" * 40)
+            print(f"    Stop Price: ${stop_price}")
+        if session and instrument_type == "EQUITY":
+            print(f"    Session: {session}")
+        if open_close and instrument_type == "OPTION":
+            print(f"    Open/Close: {open_close}")
+
+        # Preflight response details
+        print("\n  ESTIMATED IMPACT:")
+        if hasattr(preflight_response, 'estimated_total_cost') and preflight_response.estimated_total_cost is not None:
+            print(f"    Estimated Total Cost: ${preflight_response.estimated_total_cost}")
+        if hasattr(preflight_response, 'estimated_price') and preflight_response.estimated_price is not None:
+            print(f"    Estimated Price: ${preflight_response.estimated_price}")
+        if hasattr(preflight_response, 'estimated_quantity') and preflight_response.estimated_quantity is not None:
+            print(f"    Estimated Quantity: {preflight_response.estimated_quantity}")
+        if hasattr(preflight_response, 'buying_power_impact') and preflight_response.buying_power_impact is not None:
+            print(f"    Buying Power Impact: ${preflight_response.buying_power_impact}")
+        if hasattr(preflight_response, 'fees') and preflight_response.fees is not None:
+            print(f"    Estimated Fees: ${preflight_response.fees}")
+
+        # Print full response for debugging/visibility
+        print("\n  FULL RESPONSE:")
+        print(f"    {preflight_response}")
+
+        print("\n" + "=" * 70)
 
         client.close()
     except Exception as e:
-        print(f"Error placing order: {e}")
+        print(f"Error performing preflight calculation: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Place an order on Public.com")
+    parser = argparse.ArgumentParser(
+        description="Perform a preflight calculation to estimate order cost and account impact",
+        epilog="Examples:\n"
+               "  Equity limit buy:\n"
+               "    python3 preflight.py --symbol AAPL --type EQUITY --side BUY --order-type LIMIT --quantity 10 --limit-price 227.50\n\n"
+               "  Equity market sell:\n"
+               "    python3 preflight.py --symbol AAPL --type EQUITY --side SELL --order-type MARKET --quantity 10\n\n"
+               "  Crypto buy by amount:\n"
+               "    python3 preflight.py --symbol BTC --type CRYPTO --side BUY --order-type MARKET --amount 100\n\n"
+               "  Option contract buy:\n"
+               "    python3 preflight.py --symbol NVDA260213P00177500 --type OPTION --side BUY --order-type LIMIT --quantity 1 --limit-price 4.00 --open-close OPEN",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--symbol", required=True, help="Stock/crypto/option symbol")
     parser.add_argument(
         "--type",
@@ -195,7 +248,7 @@ if __name__ == "__main__":
         choices=["LIMIT", "MARKET", "STOP", "STOP_LIMIT"],
         help="Order type",
     )
-    parser.add_argument("--quantity", type=float, help="Number of shares")
+    parser.add_argument("--quantity", type=float, help="Number of shares/contracts")
     parser.add_argument("--amount", type=float, help="Notional dollar amount")
     parser.add_argument("--limit-price", type=float, help="Limit price (required for LIMIT/STOP_LIMIT)")
     parser.add_argument("--stop-price", type=float, help="Stop price (required for STOP/STOP_LIMIT)")
@@ -203,12 +256,12 @@ if __name__ == "__main__":
         "--session",
         choices=["CORE", "EXTENDED"],
         default="CORE",
-        help="Market session (CORE or EXTENDED)",
+        help="Market session for equity orders (CORE or EXTENDED)",
     )
     parser.add_argument(
         "--open-close",
         choices=["OPEN", "CLOSE"],
-        help="Open/Close indicator for options",
+        help="Open/Close indicator for options (OPEN to open a new position, CLOSE to close existing)",
     )
     parser.add_argument(
         "--time-in-force",
@@ -220,7 +273,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    place_order(
+    perform_preflight(
         symbol=args.symbol,
         instrument_type=args.type,
         side=args.side,

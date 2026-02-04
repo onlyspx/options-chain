@@ -7,7 +7,7 @@ license: Apache-2.0
 metadata:
   author: public.com
   category: "Finance"
-  tags: ["investing", "stocks", "crypto", "options", public", "finance"]
+  tags: ["investing", "stocks", "crypto", "options", "public", "finance"]
   version: "1.0"
 ---
 
@@ -26,7 +26,7 @@ pip install publicdotcom-py
 
 ### API Secret (Required)
 If the environment variable `PUBLIC_COM_SECRET` is not set:
-- Tell the user: "I need your Public.com API Secret. You can find this in your Public.com developer settings at public.com/api/docs."
+- Tell the user: "I need your Public.com API Secret. You can find this in your Public.com developer settings at https://public.com/settings/v2/api."
 - Once provided, save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_SECRET [VALUE]`
 
 ### Default Account ID (Optional)
@@ -54,6 +54,51 @@ When the user asks to "get my orders", "show my orders", "active orders", or "pe
 2. If not set and you don't know the user's account ID, first run `get_accounts.py` to retrieve it.
 3. Execute `python3 scripts/get_orders.py --account-id [ACCOUNT_ID]`
 4. Report the active orders with their details (symbol, side, type, status, quantity, prices) back to the user.
+
+### Get History
+When the user asks to "get my history", "show my transactions", "transaction history", "trade history", or wants to see past account activity:
+
+**Optional parameters:**
+- `--type`: Filter by transaction type (TRADE, MONEY_MOVEMENT, POSITION_ADJUSTMENT)
+- `--limit`: Limit the number of transactions returned
+
+**Examples:**
+
+Get all transaction history:
+```bash
+python3 scripts/get_history.py
+```
+
+Get only trades:
+```bash
+python3 scripts/get_history.py --type TRADE
+```
+
+Get only money movements (deposits, withdrawals, dividends, fees):
+```bash
+python3 scripts/get_history.py --type MONEY_MOVEMENT
+```
+
+Get last 10 transactions:
+```bash
+python3 scripts/get_history.py --limit 10
+```
+
+With explicit account ID:
+```bash
+python3 scripts/get_history.py --account-id YOUR_ACCOUNT_ID
+```
+
+**Workflow:**
+1. If `PUBLIC_COM_ACCOUNT_ID` is not set and you don't know the user's account ID, first run `get_accounts.py` to retrieve it.
+2. Execute: `python3 scripts/get_history.py [OPTIONS]`
+3. Report the transaction history grouped by type (Trades, Money Movements, Position Adjustments).
+4. Include relevant details like symbol, quantity, net amount, fees, and timestamps.
+
+**Transaction Types:**
+- **TRADE**: Buy/sell transactions for equities, options, and crypto
+- **MONEY_MOVEMENT**: Deposits, withdrawals, dividends, fees, and cash adjustments
+- **POSITION_ADJUSTMENT**: Stock splits, mergers, and other position changes
 
 ### Get Quotes
 When the user asks to "get a quote", "what's the price of", "check the price", or wants stock/crypto prices:
@@ -133,6 +178,32 @@ python3 scripts/get_instruments.py --limit 50
 1. Parse the user's request for any filters (type, trading status, search term).
 2. Execute: `python3 scripts/get_instruments.py [OPTIONS]`
 3. Report the available instruments with their trading status back to the user.
+
+### Get Instrument
+When the user asks to "get instrument details", "show instrument info", "what are the details for AAPL", or wants to see details for a specific instrument:
+
+**Required parameters:**
+- `--symbol`: The ticker symbol (e.g., AAPL, BTC)
+
+**Optional parameters:**
+- `--type`: Instrument type (EQUITY, OPTION, CRYPTO). Defaults to EQUITY.
+
+**Examples:**
+
+Get equity instrument details:
+```bash
+python3 scripts/get_instrument.py --symbol AAPL
+```
+
+Get crypto instrument details:
+```bash
+python3 scripts/get_instrument.py --symbol BTC --type CRYPTO
+```
+
+**Workflow:**
+1. Parse the user's request for the symbol and optional type.
+2. Execute: `python3 scripts/get_instrument.py --symbol [SYMBOL] [--type TYPE]`
+3. Report the instrument details (trading status, fractional trading, option trading) back to the user.
 
 ### Get Option Expirations
 **This skill CAN list all available option expiration dates for any symbol.**
@@ -247,6 +318,56 @@ When the user asks to "set my default account" or "use account X as default":
 1. Save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_ACCOUNT_ID [ACCOUNT_ID]`
 2. Confirm to the user that future requests will use this account by default.
 
+### Preflight Calculation
+When the user asks to "estimate order cost", "preflight an order", "what would it cost to buy", "check buying power impact", or wants to see the estimated cost and account impact before placing an order:
+
+**Required parameters:**
+- `--symbol`: The ticker symbol (e.g., AAPL, BTC, or option symbol like NVDA260213P00177500)
+- `--type`: EQUITY, OPTION, or CRYPTO
+- `--side`: BUY or SELL
+- `--order-type`: LIMIT, MARKET, STOP, or STOP_LIMIT
+- `--quantity` OR `--amount`: Number of shares/contracts OR notional dollar amount
+
+**Conditional parameters:**
+- `--limit-price`: Required for LIMIT and STOP_LIMIT orders
+- `--stop-price`: Required for STOP and STOP_LIMIT orders
+- `--session`: CORE (default) or EXTENDED for equity orders
+- `--open-close`: OPEN or CLOSE for options orders (OPEN to open a new position, CLOSE to close existing)
+- `--time-in-force`: DAY (default) or GTC (Good Till Cancelled)
+
+**Examples:**
+
+Equity limit buy preflight:
+```bash
+python3 scripts/preflight.py --symbol AAPL --type EQUITY --side BUY --order-type LIMIT --quantity 10 --limit-price 227.50
+```
+
+Equity market sell preflight:
+```bash
+python3 scripts/preflight.py --symbol AAPL --type EQUITY --side SELL --order-type MARKET --quantity 10
+```
+
+Crypto buy by amount preflight:
+```bash
+python3 scripts/preflight.py --symbol BTC --type CRYPTO --side BUY --order-type MARKET --amount 100
+```
+
+Option contract buy preflight (opening a new position):
+```bash
+python3 scripts/preflight.py --symbol NVDA260213P00177500 --type OPTION --side BUY --order-type LIMIT --quantity 1 --limit-price 4.00 --open-close OPEN
+```
+
+Option contract sell preflight (closing a position):
+```bash
+python3 scripts/preflight.py --symbol NVDA260213P00177500 --type OPTION --side SELL --order-type LIMIT --quantity 1 --limit-price 5.00 --open-close CLOSE
+```
+
+**Workflow:**
+1. Gather the order parameters from the user (symbol, type, side, order type, quantity/amount, prices if needed).
+2. Execute: `python3 scripts/preflight.py [OPTIONS]`
+3. Report the estimated cost, buying power impact, and any fees to the user.
+4. If the user wants to proceed, use the `place_order.py` script with the same parameters.
+
 ### Place Order
 When the user asks to "buy", "sell", "place an order", or "trade":
 
@@ -262,6 +383,7 @@ When the user asks to "buy", "sell", "place an order", or "trade":
 - `--stop-price`: Required for STOP and STOP_LIMIT orders
 - `--session`: CORE (default) or EXTENDED for equity orders
 - `--open-close`: OPEN or CLOSE for options orders
+- `--time-in-force`: DAY (default) or GTC (Good Till Cancelled)
 
 **Examples:**
 
@@ -278,6 +400,11 @@ python3 scripts/place_order.py --symbol AAPL --type EQUITY --side SELL --order-t
 Buy crypto with extended hours:
 ```bash
 python3 scripts/place_order.py --symbol BTC --type CRYPTO --side BUY --order-type MARKET --amount 100
+```
+
+Buy with Good Till Cancelled (GTC) order:
+```bash
+python3 scripts/place_order.py --symbol AAPL --type EQUITY --side BUY --order-type LIMIT --quantity 10 --limit-price 220.00 --time-in-force GTC
 ```
 
 **Workflow:**
