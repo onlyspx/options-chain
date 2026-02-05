@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from config import get_api_secret, get_account_id
+
 try:
     from public_api_sdk import (
         PublicApiClient,
@@ -38,8 +40,8 @@ def get_option_expirations(client, symbol):
 
 def list_expirations(symbol, account_id=None):
     """List available expiration dates for a symbol."""
-    secret = os.getenv("PUBLIC_COM_SECRET")
-    account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    secret = get_api_secret()
+    account_id = account_id or get_account_id()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")
@@ -129,8 +131,8 @@ def get_option_chain(symbol, expiration_date=None, account_id=None):
         expiration_date: Expiration date (YYYY-MM-DD). If not provided, uses the nearest expiration.
         account_id: Account ID (optional, uses PUBLIC_COM_ACCOUNT_ID env var if not provided)
     """
-    secret = os.getenv("PUBLIC_COM_SECRET")
-    account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    secret = get_api_secret()
+    account_id = account_id or get_account_id()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")

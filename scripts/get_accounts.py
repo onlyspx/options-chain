@@ -11,9 +11,11 @@ except ImportError:
     from public_api_sdk import PublicApiClient, PublicApiClientConfiguration
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 
+from config import get_api_secret
+
 
 def get_accounts():
-    secret = os.getenv("PUBLIC_COM_SECRET")
+    secret = get_api_secret()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")

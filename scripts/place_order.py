@@ -38,6 +38,8 @@ except ImportError:
     )
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 
+from config import get_api_secret, get_account_id
+
 
 def place_order(
     symbol,
@@ -53,8 +55,8 @@ def place_order(
     time_in_force=None,
     account_id=None,
 ):
-    secret = os.getenv("PUBLIC_COM_SECRET")
-    account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    secret = get_api_secret()
+    account_id = account_id or get_account_id()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")
@@ -105,7 +107,6 @@ def place_order(
     }
     time_in_force_map = {
         "DAY": TimeInForce.DAY,
-        "GTC": TimeInForce.GTC,
     }
 
     try:

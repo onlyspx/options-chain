@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from config import get_api_secret, get_account_id
+
 try:
     from public_api_sdk import (
         PublicApiClient,
@@ -29,7 +31,7 @@ def get_instrument(symbol, instrument_type="EQUITY"):
         symbol: The ticker symbol (e.g., AAPL, BTC)
         instrument_type: The instrument type (EQUITY, OPTION, CRYPTO)
     """
-    secret = os.getenv("PUBLIC_COM_SECRET")
+    secret = get_api_secret()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")

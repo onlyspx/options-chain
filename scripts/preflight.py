@@ -37,6 +37,8 @@ except ImportError:
     )
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 
+from config import get_api_secret, get_account_id
+
 
 def perform_preflight(
     symbol,
@@ -69,8 +71,8 @@ def perform_preflight(
         time_in_force: DAY or GTC
         account_id: Account ID (optional if PUBLIC_COM_ACCOUNT_ID is set)
     """
-    secret = os.getenv("PUBLIC_COM_SECRET")
-    account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    secret = get_api_secret()
+    account_id = account_id or get_account_id()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")
@@ -121,7 +123,6 @@ def perform_preflight(
     }
     time_in_force_map = {
         "DAY": TimeInForce.DAY,
-        "GTC": TimeInForce.GTC,
     }
 
     try:

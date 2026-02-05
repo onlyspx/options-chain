@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+from config import get_api_secret, get_account_id
+
 try:
     from public_api_sdk import (
         PublicApiClient,
@@ -31,8 +33,8 @@ def get_quotes(symbols, account_id=None):
         symbols: List of tuples (symbol, instrument_type)
         account_id: Account ID (optional, uses PUBLIC_COM_ACCOUNT_ID env var if not provided)
     """
-    secret = os.getenv("PUBLIC_COM_SECRET")
-    account_id = account_id or os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    secret = get_api_secret()
+    account_id = account_id or get_account_id()
 
     if not secret:
         print("Error: PUBLIC_COM_SECRET is not set.")
