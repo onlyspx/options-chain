@@ -435,3 +435,22 @@ python3 scripts/cancel_order.py --order-id 345d3e58-5ba3-401a-ac89-1b756332cc94 
 2. Confirm with the user which order they want to cancel.
 3. Execute: `python3 scripts/cancel_order.py --order-id [ORDER_ID]`
 4. Inform the user that cancellation is asynchronous - they should check order status to confirm.
+
+### Options Strategy Guidance
+When the user asks about options strategies, how to automate a strategy, which strategy to use for a given scenario, or wants help constructing multi-leg options trades:
+
+1. Read the file `options-automation-library.md` (located in the same directory as this skill) for detailed strategy context.
+2. This library contains 35+ options strategies organized by category:
+   - **Single-leg strategies**: Long Call, Long Put, Covered Call, Cash-Secured Put
+   - **Vertical spreads**: Bull Call, Bear Call, Bull Put, Bear Put
+   - **Calendar & diagonal spreads**: Long Calendar, Diagonal Spread
+   - **Straddles & strangles**: Long/Short Straddle, Long/Short Strangle
+   - **Complex spreads**: Iron Condor, Iron Butterfly, Broken-Wing Butterfly, Jade Lizard, Christmas Tree
+   - **Synthetic positions**: Synthetic Long/Short, Synthetic Covered Call, Conversion/Reversal
+   - **Income strategies**: Wheel, Poor Man's Covered Call, Ratio Spreads
+   - **Advanced/quant strategies**: Box Spread, Risk Reversal, Hedged Iron Fly, Vol Arb, Calendar Strangles
+   - **Event-driven workflows**: Earnings IV Crush, Pre-Market IV Expansion, Post-Earnings Drift, Macro/OPEX Gamma
+3. Each strategy includes: description, use case with event examples, where the strategy breaks, API workflow steps, and code examples using the Public.com SDK.
+4. Use the shared SDK helpers (Setup, Market Data, Preflight, Multi-leg order helpers) from the library when constructing code examples.
+5. When recommending a strategy, always include the "Where This Strategy Breaks" context so the user understands the risks.
+6. For executable trades, map the library's code patterns to the actual scripts available in this skill (e.g., `get_option_chain.py`, `get_option_expirations.py`, `preflight.py`, `place_order.py`).
