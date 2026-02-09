@@ -8,6 +8,8 @@ This is the repo for the OpenClaw skill to interact with your Public.com brokera
 
 For illustrative and informational purposes only. Not investment advice or recommendations.
 
+We recommend running OpenClaw with this skill in as isolated of an instance as possible. If possible, test the integration on a new Public account as well.
+
 ## Before You Get Started
 
 There are a few prerequisites needed to get started:
