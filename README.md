@@ -42,11 +42,41 @@ You can install it with this command:
 npx clawhub@latest install claw-skill-public-dot-com
 ```
 
-## Entering Your Public.com API Key
+## Configuration
 
-Once the skill has been installed, you will be asked to enter your Public.com API key on the first prompt related to it. For example, if you ask "How is my Public portfolio doing today?" you will be asked to configure the API key. This will persist so long as the key stays active.
+This skill uses two environment variables:
 
-Some requests will need an account number. You can ask the skill to list your different Public accounts to see the account numbers, and you can set one as your default by simply asking. This default and the API key will be used for subsequent requests, unless told otherwise.
+| Variable | Required | Description |
+|---|---|---|
+| `PUBLIC_COM_SECRET` | Yes | Your Public.com API secret key |
+| `PUBLIC_COM_ACCOUNT_ID` | No | Default account ID for all requests |
+
+### How secrets are resolved
+
+Each variable is looked up in order:
+
+1. **Secure file** — `~/.openclaw/workspace/.secrets/public_com_secret.txt` (or `public_com_account.txt`)
+2. **Environment variable** — `PUBLIC_COM_SECRET` / `PUBLIC_COM_ACCOUNT_ID`
+
+### Setting your API key
+
+The easiest way is via `openclaw config set`, which writes to the secure file location:
+
+```bash
+openclaw config set skills.publicdotcom.PUBLIC_COM_SECRET <YOUR_API_SECRET>
+```
+
+You can find your API secret at https://public.com/settings/v2/api. Alternatively, the skill will prompt you for it on first use (e.g. "How is my Public portfolio doing today?").
+
+### Setting a default account ID
+
+Some requests require an account ID. You can list your accounts first, then set a default:
+
+```bash
+openclaw config set skills.publicdotcom.PUBLIC_COM_ACCOUNT_ID <YOUR_ACCOUNT_ID>
+```
+
+This eliminates the need to specify `--account-id` on each command.
 
 ## Example Prompts
 

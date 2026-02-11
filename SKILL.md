@@ -5,7 +5,8 @@ description: Interact with your Public.com brokerage account using the Public.co
 env: ['PUBLIC_COM_SECRET', 'PUBLIC_COM_ACCOUNT_ID']
 license: Apache-2.0
 metadata:
-  author: public.com
+  author: PublicDotCom
+  source: https://github.com/PublicDotCom/claw-skill-public-dot-com
   category: "Finance"
   tags: ["investing", "stocks", "crypto", "options", "public", "finance"]
   version: "1.0"
@@ -13,10 +14,16 @@ metadata:
 
 # Public.com Account Manager
 > **Disclaimer:** For illustrative and informational purposes only. Not investment advice or recommendations.
+>
+> We recommend running this skill in as isolated of an instance as possible. If possible, test the integration on a new Public account as well.
 
 This skill allows users to interact with their Public.com brokerage account.
 
 ## Prerequisites
+- **Python 3.8+** and **pip** — Required in your OpenClaw environment.
+- **Public.com account** — Create one at https://public.com/signup
+- **Public.com API key** — Get one at https://public.com/settings/v2/api
+
 The `publicdotcom-py` SDK is required. It will be **auto-installed** on first run, or you can install manually:
 ```bash
 pip install publicdotcom-py
@@ -24,8 +31,15 @@ pip install publicdotcom-py
 
 ## Configuration
 
+This skill uses two environment variables: `PUBLIC_COM_SECRET` (required) and `PUBLIC_COM_ACCOUNT_ID` (optional). Each is resolved in the following order:
+
+1. **Secure file** — `~/.openclaw/workspace/.secrets/public_com_secret.txt` (or `public_com_account.txt`)
+2. **Environment variable** — `PUBLIC_COM_SECRET` / `PUBLIC_COM_ACCOUNT_ID`
+
+Setting a value via `openclaw config set` writes to the secure file location automatically.
+
 ### API Secret (Required)
-If the environment variable `PUBLIC_COM_SECRET` is not set:
+If `PUBLIC_COM_SECRET` is not set:
 - Tell the user: "I need your Public.com API Secret. You can find this in your Public.com developer settings at https://public.com/settings/v2/api."
 - Once provided, save it: `openclaw config set skills.publicdotcom.PUBLIC_COM_SECRET [VALUE]`
 

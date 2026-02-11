@@ -14,7 +14,7 @@ try:
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 except ImportError:
     print("Installing required dependency: publicdotcom-py...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "publicdotcom-py"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "publicdotcom-py==0.1.8"])
     from public_api_sdk import (
         PublicApiClient,
         PublicApiClientConfiguration,
@@ -43,10 +43,10 @@ def get_instrument(symbol, instrument_type="EQUITY"):
         "CRYPTO": InstrumentType.CRYPTO,
     }
 
-    account_id = os.getenv("PUBLIC_COM_ACCOUNT_ID")
+    account_id = get_account_id()
 
     if not account_id:
-        print("Error: No account ID provided. Set PUBLIC_COM_ACCOUNT_ID environment variable.")
+        print("Error: No account ID provided. Either pass --account-id or set PUBLIC_COM_ACCOUNT_ID.")
         sys.exit(1)
 
     try:
