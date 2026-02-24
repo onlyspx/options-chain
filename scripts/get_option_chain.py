@@ -29,16 +29,28 @@ except ImportError:
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 
 
-def get_option_expirations(client, symbol):
+# Index symbols use InstrumentType.INDEX (SPX, NDX, VIX, etc.)
+INDEX_SYMBOLS = frozenset({"SPX", "NDX", "VIX", "RUT", "CBTX"})
+
+
+def _instrument_type(symbol, index=False):
+    if index or (symbol and symbol.upper() in INDEX_SYMBOLS):
+        return InstrumentType.INDEX
+    return InstrumentType.EQUITY
+
+
+def get_option_expirations(client, symbol, instrument_type=None):
     """Get available expiration dates for a symbol."""
+    if instrument_type is None:
+        instrument_type = _instrument_type(symbol)
     request = OptionExpirationsRequest(
-        instrument=OrderInstrument(symbol=symbol, type=InstrumentType.EQUITY)
+        instrument=OrderInstrument(symbol=symbol, type=instrument_type)
     )
     response = client.get_option_expirations(request)
     return response.expirations if hasattr(response, 'expirations') else []
 
 
-def list_expirations(symbol, account_id=None):
+def list_expirations(symbol, account_id=None, index=False):
     """List available expiration dates for a symbol."""
     secret = get_api_secret()
     account_id = account_id or get_account_id()
@@ -51,13 +63,14 @@ def list_expirations(symbol, account_id=None):
         print("Error: No account ID provided. Either pass --account-id or set PUBLIC_COM_ACCOUNT_ID.")
         sys.exit(1)
 
+    inst_type = _instrument_type(symbol, index=index)
     try:
         client = PublicApiClient(
             ApiKeyAuthConfig(api_secret_key=secret),
             config=PublicApiClientConfiguration(default_account_number=account_id)
         )
 
-        expirations = get_option_expirations(client, symbol)
+        expirations = get_option_expirations(client, symbol, instrument_type=inst_type)
 
         print("=" * 50)
         print(f"OPTION EXPIRATIONS - {symbol}")
@@ -122,14 +135,15 @@ def format_int(value, default="--"):
         return default
 
 
-def get_option_chain(symbol, expiration_date=None, account_id=None):
+def get_option_chain(symbol, expiration_date=None, account_id=None, index=False):
     """
     Get option chain for a symbol and expiration date.
 
     Args:
-        symbol: The underlying symbol (e.g., AAPL)
+        symbol: The underlying symbol (e.g., AAPL or SPX)
         expiration_date: Expiration date (YYYY-MM-DD). If not provided, uses the nearest expiration.
         account_id: Account ID (optional, uses PUBLIC_COM_ACCOUNT_ID env var if not provided)
+        index: If True, treat symbol as index (e.g. SPX). SPX/NDX/VIX/RUT/CBTX are auto-detected.
     """
     secret = get_api_secret()
     account_id = account_id or get_account_id()
@@ -142,24 +156,23 @@ def get_option_chain(symbol, expiration_date=None, account_id=None):
         print("Error: No account ID provided. Either pass --account-id or set PUBLIC_COM_ACCOUNT_ID.")
         sys.exit(1)
 
+    inst_type = _instrument_type(symbol, index=index)
     try:
         client = PublicApiClient(
             ApiKeyAuthConfig(api_secret_key=secret),
             config=PublicApiClientConfiguration(default_account_number=account_id)
         )
 
-        # If no expiration date provided, get the first available one
         if not expiration_date:
-            expirations = get_option_expirations(client, symbol)
+            expirations = get_option_expirations(client, symbol, instrument_type=inst_type)
             if not expirations:
                 print(f"Error: No option expirations found for {symbol}")
                 sys.exit(1)
             expiration_date = expirations[0]
             print(f"Using nearest expiration: {expiration_date}")
 
-        # Build the request
         request = OptionChainRequest(
-            instrument=OrderInstrument(symbol=symbol, type=InstrumentType.EQUITY),
+            instrument=OrderInstrument(symbol=symbol, type=inst_type),
             expiration_date=expiration_date
         )
 
@@ -260,14 +273,20 @@ if __name__ == "__main__":
         required=False,
         help="Account ID (uses PUBLIC_COM_ACCOUNT_ID env var if not provided)"
     )
+    parser.add_argument(
+        "--index",
+        action="store_true",
+        help="Treat symbol as index (SPX, NDX, VIX, etc.). SPX/NDX/VIX/RUT/CBTX are auto-detected."
+    )
 
     args = parser.parse_args()
 
     if args.list_expirations:
-        list_expirations(symbol=args.symbol.upper(), account_id=args.account_id)
+        list_expirations(symbol=args.symbol.upper(), account_id=args.account_id, index=args.index)
     else:
         get_option_chain(
             symbol=args.symbol.upper(),
             expiration_date=args.expiration,
-            account_id=args.account_id
+            account_id=args.account_id,
+            index=args.index
         )

@@ -1,0 +1,125 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1a1a1a;
+  color: #d0d0d0;
+  min-height: 100vh;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.header {
+  background: #222;
+  border-radius: 2px;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+}
+.header-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.title { font-weight: 600; color: #fff; font-size: 11px; }
+.spx-label { color: #777; font-size: 10px; }
+.spx-price { font-variant-numeric: tabular-nums; color: #4ade80; font-weight: 600; font-size: 12px; }
+.meta { color: #777; font-variant-numeric: tabular-nums; font-size: 10px; }
+.metrics { display: inline-flex; gap: 6px; flex-wrap: wrap; color: #888; font-size: 10px; align-items: center; }
+.metrics span { white-space: nowrap; }
+.tabs { display: inline-flex; gap: 2px; margin-left: 8px; }
+.tab {
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid #444;
+  color: #888;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 10px;
+}
+.tab.active { background: #333; color: #4ade80; border-color: #4ade80; }
+.tab:hover:not(.active) { background: #2a2a2a; }
+.toggles { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 3px; }
+.toggles label {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 4px; background: #2a2a2a; border-radius: 2px;
+  cursor: pointer; font-size: 10px; color: #999;
+}
+.toggles input:checked + span { color: #4ade80; }
+.main-section {
+  background: #222;
+  border-radius: 2px;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+}
+.section-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 2px; }
+.section-title { font-size: 11px; font-weight: 600; color: #999; }
+.section-controls { font-size: 10px; color: #666; display: flex; gap: 6px; align-items: center; }
+.section-controls label { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; }
+.section-controls select { padding: 1px 4px; font-size: 10px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; }
+.strike-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 11px; }
+.strike-table th, .strike-table td { padding: 2px 4px; vertical-align: middle; }
+.strike-table th { color: #666; font-weight: 500; text-align: right; font-size: 10px; }
+.strike-table th.strike-col { text-align: center; }
+.strike-table td.strike-col { text-align: center; font-weight: 600; color: #fff; font-size: 11px; }
+.strike-table tr:hover .bar-cell { opacity: 0.95; }
+.strike-table tr.atm .strike-col { color: #fbbf24; }
+.put-num { color: #fb923c; text-align: right; }
+.call-num { color: #60a5fa; text-align: left; }
+.bar-cell { width: 100px; padding: 0 3px; vertical-align: middle; }
+.bar-wrap { display: flex; align-items: center; height: 16px; width: 100%; }
+.bar-wrap.put { flex-direction: row; justify-content: flex-end; }
+.bar-wrap.call { flex-direction: row; justify-content: flex-start; }
+.bar { height: 10px; border-radius: 1px; min-width: 2px; flex-shrink: 0; }
+.bar.put { background: #ea580c; }
+.bar.call { background: #2563eb; }
+.strike-table td.high-put-volume {
+  background: rgba(234, 88, 12, 0.18);
+}
+.strike-table td.put-num.high-put-volume {
+  border-left: 2px solid #ea580c;
+}
+.strike-table td.high-call-volume {
+  background: rgba(37, 99, 235, 0.18);
+}
+.strike-table td.call-num.high-call-volume {
+  border-right: 2px solid #2563eb;
+}
+.netto { text-align: right; }
+.netto.neg { color: #f87171; }
+.netto.pos { color: #4ade80; }
+.sum-col { text-align: right; color: #888; }
+.btn-refresh { padding: 2px 8px; font-size: 10px; background: #2d5a2d; border: 1px solid #4ade80; color: #4ade80; border-radius: 4px; cursor: pointer; }
+.btn-refresh:hover { background: #3d6a3d; }
+.error-msg { color: #f87171; padding: 8px; }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status-pill.live {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+  border: 1px solid #4ade80;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+.status-pill.stale {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+  border: 1px solid #fbbf24;
+}
+.status-pill.error {
+  background: rgba(248, 113, 113, 0.2);
+  color: #f87171;
+  border: 1px solid #f87171;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}

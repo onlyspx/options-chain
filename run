@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run scripts with the project venv. Usage: ./run get_quotes SPY QQQ
+# From repo root. Ensures .env is found (scripts load it from repo root).
+set -e
+cd "$(dirname "$0")"
+if [[ ! -d .venv ]]; then
+  echo "Creating venv and installing deps..."
+  python3 -m venv .venv
+  .venv/bin/pip install -r requirements.txt -q
+fi
+.venv/bin/python3 scripts/"$1".py "${@:2}"

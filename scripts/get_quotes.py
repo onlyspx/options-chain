@@ -48,6 +48,7 @@ def get_quotes(symbols, account_id=None):
         "EQUITY": InstrumentType.EQUITY,
         "OPTION": InstrumentType.OPTION,
         "CRYPTO": InstrumentType.CRYPTO,
+        "INDEX": InstrumentType.INDEX,
     }
 
     try:
@@ -106,10 +107,14 @@ def get_quotes(symbols, account_id=None):
         sys.exit(1)
 
 
+# Index symbols (use INDEX type for quotes)
+INDEX_SYMBOLS = frozenset({"SPX", "NDX", "VIX", "RUT", "CBTX"})
+
+
 def parse_symbol_arg(arg):
     """
-    Parse a symbol argument in format SYMBOL:TYPE (e.g., AAPL:EQUITY, BTC:CRYPTO)
-    If no type specified, defaults to EQUITY.
+    Parse a symbol argument in format SYMBOL:TYPE (e.g., AAPL:EQUITY, SPX:INDEX)
+    If no type specified, defaults to EQUITY except SPX/NDX/VIX/RUT/CBTX -> INDEX.
     """
     if ":" in arg:
         parts = arg.split(":", 1)
@@ -117,10 +122,10 @@ def parse_symbol_arg(arg):
         inst_type = parts[1].upper()
     else:
         symbol = arg.upper()
-        inst_type = "EQUITY"
+        inst_type = "INDEX" if symbol in INDEX_SYMBOLS else "EQUITY"
 
-    if inst_type not in ["EQUITY", "OPTION", "CRYPTO"]:
-        print(f"Error: Invalid instrument type '{inst_type}'. Must be EQUITY, OPTION, or CRYPTO.")
+    if inst_type not in ["EQUITY", "OPTION", "CRYPTO", "INDEX"]:
+        print(f"Error: Invalid instrument type '{inst_type}'. Must be EQUITY, OPTION, CRYPTO, or INDEX.")
         sys.exit(1)
 
     return (symbol, inst_type)
@@ -133,7 +138,8 @@ if __name__ == "__main__":
                "  python3 get_quotes.py AAPL\n"
                "  python3 get_quotes.py AAPL GOOGL MSFT\n"
                "  python3 get_quotes.py AAPL:EQUITY BTC:CRYPTO\n"
-               "  python3 get_quotes.py AAPL260320C00280000:OPTION",
+               "  python3 get_quotes.py AAPL260320C00280000:OPTION\n"
+               "  python3 get_quotes.py SPX",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
