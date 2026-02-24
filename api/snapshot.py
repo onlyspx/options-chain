@@ -13,6 +13,6 @@ app = FastAPI(title="SPX Snapshot API")
 
 @app.get("/")
 @app.get("/api/snapshot")
-def snapshot(mark_last_min: int | None = None):
+def snapshot(mark_last_min: int | None = None, dte: int = 0):
     """Return SPX snapshot with optional mark-last delta window."""
-    return get_snapshot(mark_last_min=mark_last_min)
+    return get_snapshot(mark_last_min=mark_last_min, dte=dte)

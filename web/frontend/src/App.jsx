@@ -34,7 +34,7 @@ function formatSigned(n) {
   return `${n > 0 ? '+' : ''}${formatInt(n)}`
 }
 
-function getConnectionStatus(snapshot, quoteAgeMs, error, loading) {
+function getConnectionStatus(snapshot, quoteAgeMs, error) {
   if (error && !snapshot) return 'error'
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'error'
   if (!snapshot || quoteAgeMs == null) return null
@@ -43,6 +43,7 @@ function getConnectionStatus(snapshot, quoteAgeMs, error, loading) {
 
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
+  const [selectedDte, setSelectedDte] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [lastSuccessAt, setLastSuccessAt] = useState(null)
@@ -54,10 +55,12 @@ export default function App() {
 
   const fetchSnapshot = useCallback(async () => {
     setError(null)
-    const url =
-      showDelta && markLastMin > 0
-        ? `${API_SNAPSHOT}?mark_last_min=${markLastMin}`
-        : API_SNAPSHOT
+    const query = new URLSearchParams()
+    query.set('dte', String(selectedDte))
+    if (showDelta && markLastMin > 0) {
+      query.set('mark_last_min', String(markLastMin))
+    }
+    const url = `${API_SNAPSHOT}?${query.toString()}`
     try {
       const res = await fetch(url)
       if (!res.ok) {
@@ -72,7 +75,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, showDelta])
+  }, [markLastMin, selectedDte, showDelta])
 
   useEffect(() => {
     fetchSnapshot()
@@ -94,7 +97,8 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">SPX 0DTE Dashboard</span>
+          <span className="title">SPX Dashboard</span>
+          <span className="meta">dte{selectedDte}</span>
           <span className="meta">Loading…</span>
         </div>
       </div>
@@ -105,7 +109,8 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">SPX 0DTE Dashboard</span>
+          <span className="title">SPX Dashboard</span>
+          <span className="meta">dte{selectedDte}</span>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>Refresh</button>
@@ -128,6 +133,7 @@ export default function App() {
     em_put_mid,
     quote_refresh_seconds,
     chain_refresh_seconds,
+    dte,
     hot_strikes_call = [],
     hot_strikes_put = [],
     spread_scanner = {},
@@ -152,7 +158,7 @@ export default function App() {
   const chainAgeMs = chainUpdatedAt != null ? Math.max(0, Date.now() - chainUpdatedAt) : null
   const quoteUpdatedAgo = quoteAgeMs != null ? Math.floor(quoteAgeMs / 1000) : null
   const chainUpdatedAgo = chainAgeMs != null ? Math.floor(chainAgeMs / 1000) : null
-  const connectionStatus = getConnectionStatus(snapshot, quoteAgeMs, error, loading)
+  const connectionStatus = getConnectionStatus(snapshot, quoteAgeMs, error)
 
   const tsDisplay = formatTimestamp(timestamp)
   const maxVol = strikes.length
@@ -189,7 +195,24 @@ export default function App() {
     <>
       <header className="header">
         <div className="header-row">
-          <span className="title">SPX 0DTE Dashboard</span>
+          <span className="title">SPX Dashboard</span>
+          <span className="meta">DTE:</span>
+          <button
+            type="button"
+            className={`dte-btn ${selectedDte === 0 ? 'is-active' : ''}`}
+            onClick={() => setSelectedDte(0)}
+            disabled={selectedDte === 0}
+          >
+            0dte
+          </button>
+          <button
+            type="button"
+            className={`dte-btn ${selectedDte === 1 ? 'is-active' : ''}`}
+            onClick={() => setSelectedDte(1)}
+            disabled={selectedDte === 1}
+          >
+            1dte
+          </button>
           {connectionStatus && (
             <>
               <span className={`status-pill ${connectionStatus}`}>
@@ -205,7 +228,7 @@ export default function App() {
           <span className="meta">Quote ts: {formatTimestamp(quote_timestamp || timestamp)}</span>
           <span className="meta">Chain ts: {formatTimestamp(chain_timestamp || timestamp)}</span>
           <span className="metrics">
-            <span>dte0 / exp {expiration || '--'}</span>
+            <span>dte{dte ?? selectedDte} / exp {expiration || '--'}</span>
             <span>quote refresh ~{quote_refresh_seconds || 10}s</span>
             <span>chain refresh ~{chain_refresh_seconds || 60}s</span>
             {quoteUpdatedAgo != null && <span>quote age {quoteUpdatedAgo}s</span>}

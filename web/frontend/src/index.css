@@ -104,6 +104,29 @@ body {
 .sum-col { text-align: right; color: #888; }
 .btn-refresh { padding: 2px 8px; font-size: 10px; background: #2d5a2d; border: 1px solid #4ade80; color: #4ade80; border-radius: 4px; cursor: pointer; }
 .btn-refresh:hover { background: #3d6a3d; }
+.dte-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  border-radius: 4px;
+  border: 1px solid #4b5563;
+  background: #1f2937;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+.dte-btn:hover:not(:disabled):not(.is-active),
+.dte-btn:focus-visible:not(:disabled):not(.is-active) {
+  background: #263243;
+  border-color: #64748b;
+  color: #e2e8f0;
+}
+.dte-btn.is-active,
+.dte-btn:disabled {
+  background: #153a2b;
+  border-color: #4ade80;
+  color: #4ade80;
+  font-weight: 600;
+  cursor: default;
+}
 .error-msg { color: #f87171; padding: 8px; }
 
 .status-pill {

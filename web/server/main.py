@@ -46,9 +46,13 @@ SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
 HOT_STRIKES_TOP_N = 8
 SPREAD_WIDTH = 5.0
 SPREAD_MAX_ROWS_PER_SIDE = 15
-_snapshot_buffer = deque(maxlen=512)  # (iso_ts, strikes_slim: list of {strike, put_vol, call_vol})
+SUPPORTED_DTES = {0, 1}
+_snapshot_buffers = {
+    0: deque(maxlen=512),
+    1: deque(maxlen=512),
+}  # dte -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
 _quote_cache = {"fetched_at": None, "spx_price": None, "timestamp": None}
-_chain_cache = {"fetched_at": None, "expiration": None, "by_strike": None, "timestamp": None}
+_chain_cache_by_exp = {}  # expiration -> {fetched_at, by_strike, timestamp}
 
 
 def _norm_exp(exp):
@@ -57,16 +61,21 @@ def _norm_exp(exp):
     return str(exp)
 
 
-def _resolve_expiration(client):
-    """SPX expiration: same-day if available, else nearest."""
+def _resolve_expiration(client, dte: int = 0):
+    """Resolve SPX expiration by DTE selection."""
     expirations = get_option_expirations(client, SYMBOL, instrument_type=InstrumentType.INDEX)
     if not expirations:
         return None
+    normalized = sorted({_norm_exp(exp) for exp in expirations})
     today_str = date.today().isoformat()
-    for exp in expirations:
-        if _norm_exp(exp) == today_str:
-            return _norm_exp(exp)
-    return _norm_exp(expirations[0])
+    if dte == 1:
+        future = [exp for exp in normalized if exp > today_str]
+        if future:
+            return future[0]
+        return normalized[-1]
+    if today_str in normalized:
+        return today_str
+    return normalized[0]
 
 
 def _decimal_float(v):
@@ -95,12 +104,12 @@ def _iso_utc(ts: datetime):
     return ts.isoformat() + "Z"
 
 
-def _prune_buffer(now_utc: datetime):
+def _prune_buffer(snapshot_buffer: deque, now_utc: datetime):
     cutoff = now_utc - timedelta(minutes=SNAPSHOT_BUFFER_MAX_AGE_MINUTES)
-    while _snapshot_buffer:
-        first_ts = datetime.fromisoformat(_snapshot_buffer[0][0].replace("Z", ""))
+    while snapshot_buffer:
+        first_ts = datetime.fromisoformat(snapshot_buffer[0][0].replace("Z", ""))
         if first_ts < cutoff:
-            _snapshot_buffer.popleft()
+            snapshot_buffer.popleft()
         else:
             break
 
@@ -183,13 +192,16 @@ def _get_quote_price(client, now_utc: datetime):
     return spx_price, ts
 
 
-def _get_chain_data(client, now_utc: datetime):
-    fetched_at = _chain_cache.get("fetched_at")
-    if fetched_at is not None and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS and _chain_cache.get("by_strike"):
-        return _chain_cache["expiration"], _chain_cache["by_strike"], _chain_cache["timestamp"]
-    expiration = _resolve_expiration(client)
-    if not expiration:
-        raise HTTPException(status_code=502, detail="No SPX expirations")
+def _get_chain_data(client, now_utc: datetime, expiration: str):
+    cache_entry = _chain_cache_by_exp.get(expiration)
+    if cache_entry:
+        fetched_at = cache_entry.get("fetched_at")
+        if (
+            fetched_at is not None
+            and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS
+            and cache_entry.get("by_strike")
+        ):
+            return expiration, cache_entry["by_strike"], cache_entry["timestamp"]
     request = OptionChainRequest(
         instrument=OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX),
         expiration_date=expiration,
@@ -199,10 +211,11 @@ def _get_chain_data(client, now_utc: datetime):
     puts = getattr(chain, "puts", []) or []
     by_strike = _build_by_strike(calls, puts)
     ts = _iso_utc(now_utc)
-    _chain_cache["fetched_at"] = now_utc
-    _chain_cache["expiration"] = expiration
-    _chain_cache["by_strike"] = by_strike
-    _chain_cache["timestamp"] = ts
+    _chain_cache_by_exp[expiration] = {
+        "fetched_at": now_utc,
+        "by_strike": by_strike,
+        "timestamp": ts,
+    }
     return expiration, by_strike, ts
 
 
@@ -228,12 +241,12 @@ def _compute_expected_move(by_strike, spx_price):
     }
 
 
-def _compute_hot_strikes(current_rows, target_minutes=5, top_n=HOT_STRIKES_TOP_N):
-    if not _snapshot_buffer:
+def _compute_hot_strikes(current_rows, snapshot_buffer: deque, target_minutes=5, top_n=HOT_STRIKES_TOP_N):
+    if not snapshot_buffer:
         return [], []
     now_utc = _now_utc()
     target = now_utc - timedelta(minutes=target_minutes)
-    candidates = list(_snapshot_buffer)
+    candidates = list(snapshot_buffer)
     best_ts, best_slim = min(
         candidates,
         key=lambda item: abs((datetime.fromisoformat(item[0].replace("Z", "")) - target).total_seconds()),
@@ -369,7 +382,9 @@ def _resolve_account_id(secret: str, account_id: str | None) -> str:
         discover_client.close()
 
 
-def _fetch_snapshot():
+def _fetch_snapshot(dte: int = 0):
+    if dte not in SUPPORTED_DTES:
+        raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
     secret = get_api_secret()
     account_id = get_account_id()
     if not secret:
@@ -385,21 +400,28 @@ def _fetch_snapshot():
     try:
         now_utc = _now_utc()
         spx_price, quote_ts = _get_quote_price(client, now_utc)
-        expiration, by_strike, chain_ts = _get_chain_data(client, now_utc)
+        expiration = _resolve_expiration(client, dte=dte)
+        if not expiration:
+            raise HTTPException(status_code=502, detail="No SPX expirations")
+        expiration, by_strike, chain_ts = _get_chain_data(client, now_utc, expiration)
         strikes = _windowed_strikes(by_strike, spx_price)
         ts_iso = _iso_utc(now_utc)
 
         # Append full-chain slim snapshot for analytics.
         full_rows = [by_strike[s] for s in sorted(by_strike.keys())]
         slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in full_rows]
-        _snapshot_buffer.append((ts_iso, slim))
-        _prune_buffer(now_utc)
+        snapshot_buffer = _snapshot_buffers.setdefault(dte, deque(maxlen=512))
+        snapshot_buffer.append((ts_iso, slim))
+        _prune_buffer(snapshot_buffer, now_utc)
 
         em = _compute_expected_move(by_strike, spx_price) or {}
-        hot_calls, hot_puts = _compute_hot_strikes(full_rows, target_minutes=5, top_n=HOT_STRIKES_TOP_N)
+        hot_calls, hot_puts = _compute_hot_strikes(
+            full_rows, snapshot_buffer=snapshot_buffer, target_minutes=5, top_n=HOT_STRIKES_TOP_N
+        )
         spread_scanner = _compute_spread_scanner(by_strike, spx_price)
 
         return {
+            "dte": dte,
             "expiration": expiration,
             "spx_price": spx_price,
             "timestamp": ts_iso,
@@ -418,12 +440,13 @@ def _fetch_snapshot():
 
 
 @app.get("/api/snapshot")
-def get_snapshot(mark_last_min: int | None = None):
-    result = _fetch_snapshot()
-    if mark_last_min is not None and mark_last_min > 0 and _snapshot_buffer:
+def get_snapshot(mark_last_min: int | None = None, dte: int = 0):
+    result = _fetch_snapshot(dte=dte)
+    snapshot_buffer = _snapshot_buffers.setdefault(dte, deque(maxlen=512))
+    if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()
         target = now_utc - timedelta(minutes=mark_last_min)
-        candidates = [(ts_iso, slim) for (ts_iso, slim) in _snapshot_buffer if ts_iso != result["timestamp"]]
+        candidates = [(ts_iso, slim) for (ts_iso, slim) in snapshot_buffer if ts_iso != result["timestamp"]]
         if not candidates:
             for s in result["strikes"]:
                 s["delta_put"] = None
