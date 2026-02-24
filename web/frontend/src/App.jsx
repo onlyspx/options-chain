@@ -6,6 +6,7 @@ const AUTO_REFRESH_MS = 10_000
 const QUOTE_LIVE_THRESHOLD_MS = 25_000
 const TOP_VOLUME_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
+const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX']
 
 function formatTimestamp(iso) {
   if (!iso) return '--'
@@ -43,6 +44,7 @@ function getConnectionStatus(snapshot, quoteAgeMs, error) {
 
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
+  const [selectedSymbol, setSelectedSymbol] = useState('SPX')
   const [selectedDte, setSelectedDte] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -56,6 +58,7 @@ export default function App() {
   const fetchSnapshot = useCallback(async () => {
     setError(null)
     const query = new URLSearchParams()
+    query.set('symbol', selectedSymbol)
     query.set('dte', String(selectedDte))
     if (showDelta && markLastMin > 0) {
       query.set('mark_last_min', String(markLastMin))
@@ -75,7 +78,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, selectedDte, showDelta])
+  }, [markLastMin, selectedDte, selectedSymbol, showDelta])
 
   useEffect(() => {
     fetchSnapshot()
@@ -97,8 +100,8 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">SPX Dashboard</span>
-          <span className="meta">dte{selectedDte}</span>
+          <span className="title">Options Dashboard</span>
+          <span className="meta">{selectedSymbol} dte{selectedDte}</span>
           <span className="meta">Loading…</span>
         </div>
       </div>
@@ -109,8 +112,8 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">SPX Dashboard</span>
-          <span className="meta">dte{selectedDte}</span>
+          <span className="title">Options Dashboard</span>
+          <span className="meta">{selectedSymbol} dte{selectedDte}</span>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>Refresh</button>
@@ -120,6 +123,8 @@ export default function App() {
   }
 
   const {
+    symbol,
+    symbol_price,
     expiration,
     spx_price,
     timestamp,
@@ -139,6 +144,8 @@ export default function App() {
     spread_scanner = {},
     strikes = [],
   } = snapshot || {}
+  const activeSymbol = symbol || selectedSymbol
+  const activePrice = symbol_price ?? spx_price
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
   const loCredit = Math.min(spreadMinCredit, spreadMaxCredit)
@@ -172,9 +179,9 @@ export default function App() {
   const scale = (v) => (v != null && maxVol > 0 ? Math.round((Number(v) / maxVol) * BAR_MAX_PX) : 0)
 
   const atmStrike =
-    spx_price != null && strikes.length
+    activePrice != null && strikes.length
       ? strikes.reduce((best, s) =>
-          Math.abs((s.strike ?? 0) - spx_price) < Math.abs((best.strike ?? 0) - spx_price) ? s : best
+          Math.abs((s.strike ?? 0) - activePrice) < Math.abs((best.strike ?? 0) - activePrice) ? s : best
         )
       : null
 
@@ -195,24 +202,31 @@ export default function App() {
     <>
       <header className="header">
         <div className="header-row">
-          <span className="title">SPX Dashboard</span>
-          <span className="meta">DTE:</span>
-          <button
-            type="button"
-            className={`dte-btn ${selectedDte === 0 ? 'is-active' : ''}`}
-            onClick={() => setSelectedDte(0)}
-            disabled={selectedDte === 0}
-          >
-            0dte
-          </button>
-          <button
-            type="button"
-            className={`dte-btn ${selectedDte === 1 ? 'is-active' : ''}`}
-            onClick={() => setSelectedDte(1)}
-            disabled={selectedDte === 1}
-          >
-            1dte
-          </button>
+          <span className="title">Options Dashboard</span>
+          <div className="symbol-dte-grid">
+            {SYMBOL_OPTIONS.map((sym) => (
+              <div key={sym} className="symbol-dte-group">
+                <span className="symbol-name">{sym}</span>
+                {[0, 1].map((dteValue) => {
+                  const isActive = selectedSymbol === sym && selectedDte === dteValue
+                  return (
+                    <button
+                      key={`${sym}-${dteValue}`}
+                      type="button"
+                      className={`dte-btn ${isActive ? 'is-active' : ''}`}
+                      onClick={() => {
+                        setSelectedSymbol(sym)
+                        setSelectedDte(dteValue)
+                      }}
+                      disabled={isActive}
+                    >
+                      {dteValue}dte
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
           {connectionStatus && (
             <>
               <span className={`status-pill ${connectionStatus}`}>
@@ -223,8 +237,8 @@ export default function App() {
               )}
             </>
           )}
-          <span className="spx-label">SPX</span>
-          <span className="spx-price">{formatPrice(spx_price)} $</span>
+          <span className="spx-label">{activeSymbol}</span>
+          <span className="spx-price">{formatPrice(activePrice)} $</span>
           <span className="meta">Quote ts: {formatTimestamp(quote_timestamp || timestamp)}</span>
           <span className="meta">Chain ts: {formatTimestamp(chain_timestamp || timestamp)}</span>
           <span className="metrics">
@@ -426,7 +440,7 @@ export default function App() {
 
       <section className="main-section">
         <div className="section-head">
-          <span className="section-title">Far OTM vertical spreads (5-wide, mark ≤ 0.50)</span>
+          <span className="section-title">Far OTM vertical spreads (5-wide, mark &le; 0.50)</span>
           <div className="section-controls spread-filters">
             <label>
               Credit min:

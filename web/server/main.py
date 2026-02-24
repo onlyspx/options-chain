@@ -38,7 +38,13 @@ except ImportError:
 
 app = FastAPI(title="SPX 0DTE Dashboard API")
 
-SYMBOL = "SPX"
+DEFAULT_SYMBOL = "SPX"
+SUPPORTED_SYMBOLS = {
+    "SPX": "INDEX",
+    "NDX": "INDEX",
+    "SPY": "EQUITY",
+    "QQQ": "EQUITY",
+}
 ATM_STRIKES = 15  # show ATM ± N strikes
 QUOTE_REFRESH_SECONDS = 10
 CHAIN_REFRESH_SECONDS = 60
@@ -47,12 +53,9 @@ HOT_STRIKES_TOP_N = 8
 SPREAD_WIDTH = 5.0
 SPREAD_MAX_ROWS_PER_SIDE = 15
 SUPPORTED_DTES = {0, 1}
-_snapshot_buffers = {
-    0: deque(maxlen=512),
-    1: deque(maxlen=512),
-}  # dte -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
-_quote_cache = {"fetched_at": None, "spx_price": None, "timestamp": None}
-_chain_cache_by_exp = {}  # expiration -> {fetched_at, by_strike, timestamp}
+_snapshot_buffers = {}  # (symbol, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
+_quote_cache_by_symbol = {}  # symbol -> {fetched_at, symbol_price, timestamp}
+_chain_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_strike, timestamp}
 
 
 def _norm_exp(exp):
@@ -61,9 +64,9 @@ def _norm_exp(exp):
     return str(exp)
 
 
-def _resolve_expiration(client, dte: int = 0):
-    """Resolve SPX expiration by DTE selection."""
-    expirations = get_option_expirations(client, SYMBOL, instrument_type=InstrumentType.INDEX)
+def _resolve_expiration(client, symbol: str, instrument_type, dte: int = 0):
+    """Resolve expiration by DTE selection for a supported symbol."""
+    expirations = get_option_expirations(client, symbol, instrument_type=instrument_type)
     if not expirations:
         return None
     normalized = sorted({_norm_exp(exp) for exp in expirations})
@@ -177,23 +180,25 @@ def _windowed_strikes(by_strike, spx_price):
     return [by_strike[s] for s in strikes_list[lo:hi]]
 
 
-def _get_quote_price(client, now_utc: datetime):
-    fetched_at = _quote_cache.get("fetched_at")
+def _get_quote_price(client, now_utc: datetime, symbol: str, instrument_type):
+    cache_entry = _quote_cache_by_symbol.setdefault(symbol, {"fetched_at": None, "symbol_price": None, "timestamp": None})
+    fetched_at = cache_entry.get("fetched_at")
     if fetched_at is not None and (now_utc - fetched_at).total_seconds() < QUOTE_REFRESH_SECONDS:
-        return _quote_cache.get("spx_price"), _quote_cache.get("timestamp")
-    quotes = client.get_quotes([OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX)])
-    spx_price = None
+        return cache_entry.get("symbol_price"), cache_entry.get("timestamp")
+    quotes = client.get_quotes([OrderInstrument(symbol=symbol, type=instrument_type)])
+    symbol_price = None
     if quotes and len(quotes) > 0:
-        spx_price = _decimal_float(getattr(quotes[0], "last", None))
+        symbol_price = _decimal_float(getattr(quotes[0], "last", None))
     ts = _iso_utc(now_utc)
-    _quote_cache["fetched_at"] = now_utc
-    _quote_cache["spx_price"] = spx_price
-    _quote_cache["timestamp"] = ts
-    return spx_price, ts
+    cache_entry["fetched_at"] = now_utc
+    cache_entry["symbol_price"] = symbol_price
+    cache_entry["timestamp"] = ts
+    return symbol_price, ts
 
 
-def _get_chain_data(client, now_utc: datetime, expiration: str):
-    cache_entry = _chain_cache_by_exp.get(expiration)
+def _get_chain_data(client, now_utc: datetime, symbol: str, instrument_type, expiration: str):
+    cache_key = (symbol, expiration)
+    cache_entry = _chain_cache_by_symbol_exp.get(cache_key)
     if cache_entry:
         fetched_at = cache_entry.get("fetched_at")
         if (
@@ -203,7 +208,7 @@ def _get_chain_data(client, now_utc: datetime, expiration: str):
         ):
             return expiration, cache_entry["by_strike"], cache_entry["timestamp"]
     request = OptionChainRequest(
-        instrument=OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX),
+        instrument=OrderInstrument(symbol=symbol, type=instrument_type),
         expiration_date=expiration,
     )
     chain = client.get_option_chain(request)
@@ -211,7 +216,7 @@ def _get_chain_data(client, now_utc: datetime, expiration: str):
     puts = getattr(chain, "puts", []) or []
     by_strike = _build_by_strike(calls, puts)
     ts = _iso_utc(now_utc)
-    _chain_cache_by_exp[expiration] = {
+    _chain_cache_by_symbol_exp[cache_key] = {
         "fetched_at": now_utc,
         "by_strike": by_strike,
         "timestamp": ts,
@@ -382,9 +387,15 @@ def _resolve_account_id(secret: str, account_id: str | None) -> str:
         discover_client.close()
 
 
-def _fetch_snapshot(dte: int = 0):
+def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
     if dte not in SUPPORTED_DTES:
         raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported symbol={symbol}; expected one of {sorted(SUPPORTED_SYMBOLS)}",
+        )
     secret = get_api_secret()
     account_id = get_account_id()
     if not secret:
@@ -392,6 +403,11 @@ def _fetch_snapshot(dte: int = 0):
     if PublicApiClient is None:
         raise HTTPException(status_code=500, detail="publicdotcom-py not installed")
     account_id = _resolve_account_id(secret=secret, account_id=account_id)
+    instrument_type = (
+        InstrumentType.INDEX
+        if SUPPORTED_SYMBOLS[symbol] == "INDEX"
+        else InstrumentType.EQUITY
+    )
 
     client = PublicApiClient(
         ApiKeyAuthConfig(api_secret_key=secret),
@@ -399,31 +415,39 @@ def _fetch_snapshot(dte: int = 0):
     )
     try:
         now_utc = _now_utc()
-        spx_price, quote_ts = _get_quote_price(client, now_utc)
-        expiration = _resolve_expiration(client, dte=dte)
+        symbol_price, quote_ts = _get_quote_price(client, now_utc, symbol=symbol, instrument_type=instrument_type)
+        expiration = _resolve_expiration(client, symbol=symbol, instrument_type=instrument_type, dte=dte)
         if not expiration:
-            raise HTTPException(status_code=502, detail="No SPX expirations")
-        expiration, by_strike, chain_ts = _get_chain_data(client, now_utc, expiration)
-        strikes = _windowed_strikes(by_strike, spx_price)
+            raise HTTPException(status_code=502, detail=f"No {symbol} expirations")
+        expiration, by_strike, chain_ts = _get_chain_data(
+            client,
+            now_utc,
+            symbol=symbol,
+            instrument_type=instrument_type,
+            expiration=expiration,
+        )
+        strikes = _windowed_strikes(by_strike, symbol_price)
         ts_iso = _iso_utc(now_utc)
 
         # Append full-chain slim snapshot for analytics.
         full_rows = [by_strike[s] for s in sorted(by_strike.keys())]
         slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in full_rows]
-        snapshot_buffer = _snapshot_buffers.setdefault(dte, deque(maxlen=512))
+        snapshot_buffer = _snapshot_buffers.setdefault((symbol, dte), deque(maxlen=512))
         snapshot_buffer.append((ts_iso, slim))
         _prune_buffer(snapshot_buffer, now_utc)
 
-        em = _compute_expected_move(by_strike, spx_price) or {}
+        em = _compute_expected_move(by_strike, symbol_price) or {}
         hot_calls, hot_puts = _compute_hot_strikes(
             full_rows, snapshot_buffer=snapshot_buffer, target_minutes=5, top_n=HOT_STRIKES_TOP_N
         )
-        spread_scanner = _compute_spread_scanner(by_strike, spx_price)
+        spread_scanner = _compute_spread_scanner(by_strike, symbol_price)
 
         return {
+            "symbol": symbol,
             "dte": dte,
             "expiration": expiration,
-            "spx_price": spx_price,
+            "symbol_price": symbol_price,
+            "spx_price": symbol_price,
             "timestamp": ts_iso,
             "quote_timestamp": quote_ts,
             "chain_timestamp": chain_ts,
@@ -440,9 +464,9 @@ def _fetch_snapshot(dte: int = 0):
 
 
 @app.get("/api/snapshot")
-def get_snapshot(mark_last_min: int | None = None, dte: int = 0):
-    result = _fetch_snapshot(dte=dte)
-    snapshot_buffer = _snapshot_buffers.setdefault(dte, deque(maxlen=512))
+def get_snapshot(mark_last_min: int | None = None, dte: int = 0, symbol: str = DEFAULT_SYMBOL):
+    result = _fetch_snapshot(symbol=symbol, dte=dte)
+    snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], dte), deque(maxlen=512))
     if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()
         target = now_utc - timedelta(minutes=mark_last_min)

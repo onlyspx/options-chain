@@ -127,6 +127,27 @@ body {
   font-weight: 600;
   cursor: default;
 }
+.symbol-dte-grid {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.symbol-dte-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #1a1a1a;
+}
+.symbol-name {
+  color: #9ca3af;
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 30px;
+}
 .error-msg { color: #f87171; padding: 8px; }
 
 .status-pill {
