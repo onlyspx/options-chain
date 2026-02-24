@@ -73,15 +73,36 @@ def _decimal_float(v):
     return None
 
 
+def _resolve_account_id(secret: str, account_id: str | None) -> str:
+    """Resolve account id from env, or auto-discover the first account."""
+    if account_id:
+        return account_id
+    # Fallback for hosted environments: discover account id from API when env var is absent.
+    discover_client = PublicApiClient(
+        ApiKeyAuthConfig(api_secret_key=secret),
+        config=PublicApiClientConfiguration(),
+    )
+    try:
+        accounts_response = discover_client.get_accounts()
+        accounts = getattr(accounts_response, "accounts", None) or []
+        if not accounts:
+            raise HTTPException(status_code=500, detail="No Public.com accounts found for API key")
+        first_account_id = getattr(accounts[0], "account_id", None)
+        if not first_account_id:
+            raise HTTPException(status_code=500, detail="Could not resolve account id from accounts response")
+        return str(first_account_id)
+    finally:
+        discover_client.close()
+
+
 def _fetch_snapshot():
     secret = get_api_secret()
     account_id = get_account_id()
     if not secret:
         raise HTTPException(status_code=500, detail="PUBLIC_COM_SECRET not set")
-    if not account_id:
-        raise HTTPException(status_code=500, detail="PUBLIC_COM_ACCOUNT_ID not set")
     if PublicApiClient is None:
         raise HTTPException(status_code=500, detail="publicdotcom-py not installed")
+    account_id = _resolve_account_id(secret=secret, account_id=account_id)
 
     client = PublicApiClient(
         ApiKeyAuthConfig(api_secret_key=secret),
