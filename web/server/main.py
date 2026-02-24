@@ -53,7 +53,8 @@ HOT_STRIKES_TOP_N = 8
 SPREAD_WIDTH = 5.0
 SPREAD_MAX_ROWS_PER_SIDE = 15
 SUPPORTED_DTES = {0, 1}
-_snapshot_buffers = {}  # (symbol, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
+SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
+_snapshot_buffers = {}  # (symbol, expiry_mode, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
 _quote_cache_by_symbol = {}  # symbol -> {fetched_at, symbol_price, timestamp}
 _chain_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_strike, timestamp}
 
@@ -64,21 +65,48 @@ def _norm_exp(exp):
     return str(exp)
 
 
-def _resolve_expiration(client, symbol: str, instrument_type, dte: int = 0):
-    """Resolve expiration by DTE selection for a supported symbol."""
+def _resolve_expiration_targets(client, symbol: str, instrument_type):
+    """Resolve key expirations used by the UI: 0dte, 1dte, and Friday weekly."""
     expirations = get_option_expirations(client, symbol, instrument_type=instrument_type)
     if not expirations:
         return None
-    normalized = sorted({_norm_exp(exp) for exp in expirations})
-    today_str = date.today().isoformat()
-    if dte == 1:
-        future = [exp for exp in normalized if exp > today_str]
-        if future:
-            return future[0]
-        return normalized[-1]
-    if today_str in normalized:
-        return today_str
-    return normalized[0]
+    parsed = []
+    for exp in expirations:
+        exp_str = _norm_exp(exp)
+        try:
+            parsed.append(date.fromisoformat(exp_str))
+        except ValueError:
+            continue
+    if not parsed:
+        return None
+    normalized_dates = sorted(set(parsed))
+    today = date.today()
+    dte0 = next((exp for exp in normalized_dates if exp >= today), normalized_dates[-1])
+    dte1 = next((exp for exp in normalized_dates if exp > today), normalized_dates[-1])
+    include_today_for_friday = today.weekday() != 4
+    friday = None
+    for exp in normalized_dates:
+        if exp.weekday() != 4:
+            continue
+        if include_today_for_friday and exp >= today:
+            friday = exp
+            break
+        if not include_today_for_friday and exp > today:
+            friday = exp
+            break
+    if friday is None:
+        friday = dte1
+    return {
+        "dte0": dte0.isoformat(),
+        "dte1": dte1.isoformat(),
+        "friday": friday.isoformat(),
+    }
+
+
+def _pick_expiration(exp_targets: dict[str, str], expiry_mode: str, dte: int):
+    if expiry_mode == "friday":
+        return exp_targets["friday"]
+    return exp_targets["dte1"] if dte == 1 else exp_targets["dte0"]
 
 
 def _decimal_float(v):
@@ -387,9 +415,15 @@ def _resolve_account_id(secret: str, account_id: str | None) -> str:
         discover_client.close()
 
 
-def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
+def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str = "dte"):
     if dte not in SUPPORTED_DTES:
         raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
+    expiry_mode = expiry_mode.lower()
+    if expiry_mode not in SUPPORTED_EXPIRY_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported expiry_mode={expiry_mode}; expected one of {sorted(SUPPORTED_EXPIRY_MODES)}",
+        )
     symbol = symbol.upper()
     if symbol not in SUPPORTED_SYMBOLS:
         raise HTTPException(
@@ -416,9 +450,10 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
     try:
         now_utc = _now_utc()
         symbol_price, quote_ts = _get_quote_price(client, now_utc, symbol=symbol, instrument_type=instrument_type)
-        expiration = _resolve_expiration(client, symbol=symbol, instrument_type=instrument_type, dte=dte)
-        if not expiration:
+        exp_targets = _resolve_expiration_targets(client, symbol=symbol, instrument_type=instrument_type)
+        if not exp_targets:
             raise HTTPException(status_code=502, detail=f"No {symbol} expirations")
+        expiration = _pick_expiration(exp_targets, expiry_mode=expiry_mode, dte=dte)
         expiration, by_strike, chain_ts = _get_chain_data(
             client,
             now_utc,
@@ -432,7 +467,7 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
         # Append full-chain slim snapshot for analytics.
         full_rows = [by_strike[s] for s in sorted(by_strike.keys())]
         slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in full_rows]
-        snapshot_buffer = _snapshot_buffers.setdefault((symbol, dte), deque(maxlen=512))
+        snapshot_buffer = _snapshot_buffers.setdefault((symbol, expiry_mode, dte), deque(maxlen=512))
         snapshot_buffer.append((ts_iso, slim))
         _prune_buffer(snapshot_buffer, now_utc)
 
@@ -445,7 +480,9 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
         return {
             "symbol": symbol,
             "dte": dte,
+            "expiry_mode": expiry_mode,
             "expiration": expiration,
+            "expirations": exp_targets,
             "symbol_price": symbol_price,
             "spx_price": symbol_price,
             "timestamp": ts_iso,
@@ -464,9 +501,9 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0):
 
 
 @app.get("/api/snapshot")
-def get_snapshot(mark_last_min: int | None = None, dte: int = 0, symbol: str = DEFAULT_SYMBOL):
-    result = _fetch_snapshot(symbol=symbol, dte=dte)
-    snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], dte), deque(maxlen=512))
+def get_snapshot(mark_last_min: int | None = None, dte: int = 0, symbol: str = DEFAULT_SYMBOL, expiry_mode: str = "dte"):
+    result = _fetch_snapshot(symbol=symbol, dte=dte, expiry_mode=expiry_mode)
+    snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiry_mode"], dte), deque(maxlen=512))
     if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()
         target = now_utc - timedelta(minutes=mark_last_min)

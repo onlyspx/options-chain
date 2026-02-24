@@ -7,6 +7,11 @@ const QUOTE_LIVE_THRESHOLD_MS = 25_000
 const TOP_VOLUME_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX']
+const EXPIRY_OPTIONS = [
+  { key: 'dte-0', label: '0dte', mode: 'dte', dte: 0, expKey: 'dte0' },
+  { key: 'dte-1', label: '1dte', mode: 'dte', dte: 1, expKey: 'dte1' },
+  { key: 'friday', label: 'Fri weekly', mode: 'friday', dte: 1, expKey: 'friday' },
+]
 
 function formatTimestamp(iso) {
   if (!iso) return '--'
@@ -35,6 +40,17 @@ function formatSigned(n) {
   return `${n > 0 ? '+' : ''}${formatInt(n)}`
 }
 
+function formatExpiryDateShort(isoDate) {
+  if (!isoDate) return '--'
+  try {
+    const [y, m, d] = isoDate.split('-').map(Number)
+    const dt = new Date(y, (m || 1) - 1, d || 1)
+    return dt.toLocaleDateString('en-US', { weekday: 'short', month: '2-digit', day: '2-digit' })
+  } catch {
+    return isoDate
+  }
+}
+
 function getConnectionStatus(snapshot, quoteAgeMs, error) {
   if (error && !snapshot) return 'error'
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'error'
@@ -46,6 +62,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
   const [selectedDte, setSelectedDte] = useState(0)
+  const [selectedExpiryMode, setSelectedExpiryMode] = useState('dte')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [lastSuccessAt, setLastSuccessAt] = useState(null)
@@ -60,6 +77,7 @@ export default function App() {
     const query = new URLSearchParams()
     query.set('symbol', selectedSymbol)
     query.set('dte', String(selectedDte))
+    query.set('expiry_mode', selectedExpiryMode)
     if (showDelta && markLastMin > 0) {
       query.set('mark_last_min', String(markLastMin))
     }
@@ -78,7 +96,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, selectedDte, selectedSymbol, showDelta])
+  }, [markLastMin, selectedDte, selectedExpiryMode, selectedSymbol, showDelta])
 
   useEffect(() => {
     fetchSnapshot()
@@ -101,7 +119,7 @@ export default function App() {
       <div className="header">
         <div className="header-row">
           <span className="title">Options Dashboard</span>
-          <span className="meta">{selectedSymbol} dte{selectedDte}</span>
+          <span className="meta">{selectedSymbol} {selectedExpiryMode === 'friday' ? 'friday' : `dte${selectedDte}`}</span>
           <span className="meta">Loading…</span>
         </div>
       </div>
@@ -113,7 +131,7 @@ export default function App() {
       <div className="header">
         <div className="header-row">
           <span className="title">Options Dashboard</span>
-          <span className="meta">{selectedSymbol} dte{selectedDte}</span>
+          <span className="meta">{selectedSymbol} {selectedExpiryMode === 'friday' ? 'friday' : `dte${selectedDte}`}</span>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>Refresh</button>
@@ -126,6 +144,8 @@ export default function App() {
     symbol,
     symbol_price,
     expiration,
+    expirations = {},
+    expiry_mode,
     spx_price,
     timestamp,
     quote_timestamp,
@@ -146,6 +166,8 @@ export default function App() {
   } = snapshot || {}
   const activeSymbol = symbol || selectedSymbol
   const activePrice = symbol_price ?? spx_price
+  const activeExpiryMode = expiry_mode || selectedExpiryMode
+  const activeExpiryLabel = activeExpiryMode === 'friday' ? 'friday weekly' : `dte${dte ?? selectedDte}`
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
   const loCredit = Math.min(spreadMinCredit, spreadMaxCredit)
@@ -203,29 +225,39 @@ export default function App() {
       <header className="header">
         <div className="header-row">
           <span className="title">Options Dashboard</span>
-          <div className="symbol-dte-grid">
+          <div className="symbol-picker">
             {SYMBOL_OPTIONS.map((sym) => (
-              <div key={sym} className="symbol-dte-group">
-                <span className="symbol-name">{sym}</span>
-                {[0, 1].map((dteValue) => {
-                  const isActive = selectedSymbol === sym && selectedDte === dteValue
-                  return (
-                    <button
-                      key={`${sym}-${dteValue}`}
-                      type="button"
-                      className={`dte-btn ${isActive ? 'is-active' : ''}`}
-                      onClick={() => {
-                        setSelectedSymbol(sym)
-                        setSelectedDte(dteValue)
-                      }}
-                      disabled={isActive}
-                    >
-                      {dteValue}dte
-                    </button>
-                  )
-                })}
-              </div>
+              <button
+                key={sym}
+                type="button"
+                className={`dte-btn ${selectedSymbol === sym ? 'is-active' : ''}`}
+                onClick={() => setSelectedSymbol(sym)}
+                disabled={selectedSymbol === sym}
+              >
+                {sym}
+              </button>
             ))}
+          </div>
+          <div className="symbol-dte-grid">
+            {EXPIRY_OPTIONS.map((opt) => {
+              const isActive = selectedExpiryMode === opt.mode && selectedDte === opt.dte
+              const expDate = expirations[opt.expKey]
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className={`dte-btn expiry-btn ${isActive ? 'is-active' : ''}`}
+                  onClick={() => {
+                    setSelectedExpiryMode(opt.mode)
+                    setSelectedDte(opt.dte)
+                  }}
+                  disabled={isActive}
+                >
+                  <span>{opt.label}</span>
+                  <span className="expiry-date">{formatExpiryDateShort(expDate)}</span>
+                </button>
+              )
+            })}
           </div>
           {connectionStatus && (
             <>
@@ -242,7 +274,10 @@ export default function App() {
           <span className="meta">Quote ts: {formatTimestamp(quote_timestamp || timestamp)}</span>
           <span className="meta">Chain ts: {formatTimestamp(chain_timestamp || timestamp)}</span>
           <span className="metrics">
-            <span>dte{dte ?? selectedDte} / exp {expiration || '--'}</span>
+            <span>{activeExpiryLabel} / exp {expiration || '--'}</span>
+            <span>0dte {expirations.dte0 || '--'}</span>
+            <span>1dte {expirations.dte1 || '--'}</span>
+            <span>fri {expirations.friday || '--'}</span>
             <span>quote refresh ~{quote_refresh_seconds || 10}s</span>
             <span>chain refresh ~{chain_refresh_seconds || 60}s</span>
             {quoteUpdatedAgo != null && <span>quote age {quoteUpdatedAgo}s</span>}
