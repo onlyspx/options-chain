@@ -31,7 +31,6 @@ try:
         OrderInstrument,
         InstrumentType,
         OptionChainRequest,
-        OptionExpirationsRequest,
     )
     from public_api_sdk.auth_config import ApiKeyAuthConfig
 except ImportError:
@@ -41,8 +40,16 @@ app = FastAPI(title="SPX 0DTE Dashboard API")
 
 SYMBOL = "SPX"
 ATM_STRIKES = 15  # show ATM ± N strikes
-SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 20
-_snapshot_buffer = deque(maxlen=128)  # (iso_ts, strikes_slim: list of {strike, put_vol, call_vol})
+QUOTE_REFRESH_SECONDS = 10
+CHAIN_REFRESH_SECONDS = 60
+SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
+HOT_STRIKES_TOP_N = 8
+SPREAD_WIDTH = 5.0
+SPREAD_MAX_CREDIT = 0.50
+SPREAD_MAX_ROWS_PER_SIDE = 15
+_snapshot_buffer = deque(maxlen=512)  # (iso_ts, strikes_slim: list of {strike, put_vol, call_vol})
+_quote_cache = {"fetched_at": None, "spx_price": None, "timestamp": None}
+_chain_cache = {"fetched_at": None, "expiration": None, "by_strike": None, "timestamp": None}
 
 
 def _norm_exp(exp):
@@ -71,6 +78,273 @@ def _decimal_float(v):
     if isinstance(v, (int, float)):
         return float(v)
     return None
+
+
+def _mid(bid, ask):
+    b = _decimal_float(bid)
+    a = _decimal_float(ask)
+    if b is None or a is None:
+        return None
+    return round((b + a) / 2, 4)
+
+
+def _now_utc():
+    return datetime.utcnow()
+
+
+def _iso_utc(ts: datetime):
+    return ts.isoformat() + "Z"
+
+
+def _prune_buffer(now_utc: datetime):
+    cutoff = now_utc - timedelta(minutes=SNAPSHOT_BUFFER_MAX_AGE_MINUTES)
+    while _snapshot_buffer:
+        first_ts = datetime.fromisoformat(_snapshot_buffer[0][0].replace("Z", ""))
+        if first_ts < cutoff:
+            _snapshot_buffer.popleft()
+        else:
+            break
+
+
+def _build_by_strike(calls, puts):
+    by_strike = {}
+    for opt in calls:
+        osi = opt.instrument.symbol if hasattr(opt, "instrument") else ""
+        strike = parse_osi_symbol(osi)
+        if strike is None:
+            continue
+        by_strike.setdefault(
+            strike,
+            {
+                "strike": strike,
+                "call_oi": None,
+                "put_oi": None,
+                "call_vol": None,
+                "put_vol": None,
+                "call_bid": None,
+                "call_ask": None,
+                "put_bid": None,
+                "put_ask": None,
+            },
+        )
+        by_strike[strike]["call_oi"] = getattr(opt, "open_interest", None)
+        by_strike[strike]["call_vol"] = getattr(opt, "volume", None)
+        by_strike[strike]["call_bid"] = _decimal_float(getattr(opt, "bid", None))
+        by_strike[strike]["call_ask"] = _decimal_float(getattr(opt, "ask", None))
+
+    for opt in puts:
+        osi = opt.instrument.symbol if hasattr(opt, "instrument") else ""
+        strike = parse_osi_symbol(osi)
+        if strike is None:
+            continue
+        by_strike.setdefault(
+            strike,
+            {
+                "strike": strike,
+                "call_oi": None,
+                "put_oi": None,
+                "call_vol": None,
+                "put_vol": None,
+                "call_bid": None,
+                "call_ask": None,
+                "put_bid": None,
+                "put_ask": None,
+            },
+        )
+        by_strike[strike]["put_oi"] = getattr(opt, "open_interest", None)
+        by_strike[strike]["put_vol"] = getattr(opt, "volume", None)
+        by_strike[strike]["put_bid"] = _decimal_float(getattr(opt, "bid", None))
+        by_strike[strike]["put_ask"] = _decimal_float(getattr(opt, "ask", None))
+
+    return by_strike
+
+
+def _windowed_strikes(by_strike, spx_price):
+    strikes_list = sorted(by_strike.keys(), reverse=True)
+    if spx_price is None or not strikes_list:
+        return [by_strike[s] for s in strikes_list]
+    atm_idx = min(range(len(strikes_list)), key=lambda i: abs(strikes_list[i] - spx_price))
+    lo = max(0, atm_idx - ATM_STRIKES)
+    hi = min(len(strikes_list), atm_idx + ATM_STRIKES + 1)
+    return [by_strike[s] for s in strikes_list[lo:hi]]
+
+
+def _get_quote_price(client, now_utc: datetime):
+    fetched_at = _quote_cache.get("fetched_at")
+    if fetched_at is not None and (now_utc - fetched_at).total_seconds() < QUOTE_REFRESH_SECONDS:
+        return _quote_cache.get("spx_price"), _quote_cache.get("timestamp")
+    quotes = client.get_quotes([OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX)])
+    spx_price = None
+    if quotes and len(quotes) > 0:
+        spx_price = _decimal_float(getattr(quotes[0], "last", None))
+    ts = _iso_utc(now_utc)
+    _quote_cache["fetched_at"] = now_utc
+    _quote_cache["spx_price"] = spx_price
+    _quote_cache["timestamp"] = ts
+    return spx_price, ts
+
+
+def _get_chain_data(client, now_utc: datetime):
+    fetched_at = _chain_cache.get("fetched_at")
+    if fetched_at is not None and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS and _chain_cache.get("by_strike"):
+        return _chain_cache["expiration"], _chain_cache["by_strike"], _chain_cache["timestamp"]
+    expiration = _resolve_expiration(client)
+    if not expiration:
+        raise HTTPException(status_code=502, detail="No SPX expirations")
+    request = OptionChainRequest(
+        instrument=OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX),
+        expiration_date=expiration,
+    )
+    chain = client.get_option_chain(request)
+    calls = getattr(chain, "calls", []) or []
+    puts = getattr(chain, "puts", []) or []
+    by_strike = _build_by_strike(calls, puts)
+    ts = _iso_utc(now_utc)
+    _chain_cache["fetched_at"] = now_utc
+    _chain_cache["expiration"] = expiration
+    _chain_cache["by_strike"] = by_strike
+    _chain_cache["timestamp"] = ts
+    return expiration, by_strike, ts
+
+
+def _compute_expected_move(by_strike, spx_price):
+    if spx_price is None or not by_strike:
+        return None
+    strikes = sorted(by_strike.keys())
+    atm_strike = min(strikes, key=lambda s: abs(s - spx_price))
+    row = by_strike.get(atm_strike, {})
+    call_mid = _mid(row.get("call_bid"), row.get("call_ask"))
+    put_mid = _mid(row.get("put_bid"), row.get("put_ask"))
+    if call_mid is None or put_mid is None:
+        return None
+    expected_move = round(call_mid + put_mid, 2)
+    return {
+        "em_method": "atm_straddle_mid",
+        "em_strike": atm_strike,
+        "em_call_mid": round(call_mid, 2),
+        "em_put_mid": round(put_mid, 2),
+        "expected_move": expected_move,
+        "em_low": round(spx_price - expected_move, 2),
+        "em_high": round(spx_price + expected_move, 2),
+    }
+
+
+def _compute_hot_strikes(current_rows, target_minutes=5, top_n=HOT_STRIKES_TOP_N):
+    if not _snapshot_buffer:
+        return [], []
+    now_utc = _now_utc()
+    target = now_utc - timedelta(minutes=target_minutes)
+    candidates = list(_snapshot_buffer)
+    best_ts, best_slim = min(
+        candidates,
+        key=lambda item: abs((datetime.fromisoformat(item[0].replace("Z", "")) - target).total_seconds()),
+    )
+    old_by_strike = {s["strike"]: s for s in best_slim}
+    hot_calls = []
+    hot_puts = []
+    for row in current_rows:
+        strike = row.get("strike")
+        old = old_by_strike.get(strike, {})
+        call_now = row.get("call_vol") or 0
+        put_now = row.get("put_vol") or 0
+        call_old = old.get("call_vol") or 0
+        put_old = old.get("put_vol") or 0
+        delta_call = call_now - call_old
+        delta_put = put_now - put_old
+        if delta_call > 0:
+            hot_calls.append(
+                {
+                    "strike": strike,
+                    "current_vol": call_now,
+                    "vol_5m_ago": call_old,
+                    "delta_5m": delta_call,
+                    "snapshot_ref": best_ts,
+                }
+            )
+        if delta_put > 0:
+            hot_puts.append(
+                {
+                    "strike": strike,
+                    "current_vol": put_now,
+                    "vol_5m_ago": put_old,
+                    "delta_5m": delta_put,
+                    "snapshot_ref": best_ts,
+                }
+            )
+    hot_calls.sort(key=lambda x: x["delta_5m"], reverse=True)
+    hot_puts.sort(key=lambda x: x["delta_5m"], reverse=True)
+    return hot_calls[:top_n], hot_puts[:top_n]
+
+
+def _compute_spread_scanner(by_strike, spx_price):
+    if spx_price is None or not by_strike:
+        return {"call_credit_spreads": [], "put_credit_spreads": []}
+    strikes = sorted(by_strike.keys())
+    strike_set = set(strikes)
+
+    def spread_entry(side, short_strike, long_strike):
+        short_row = by_strike.get(short_strike, {})
+        long_row = by_strike.get(long_strike, {})
+        if side == "call":
+            short_bid = _decimal_float(short_row.get("call_bid"))
+            short_ask = _decimal_float(short_row.get("call_ask"))
+            long_bid = _decimal_float(long_row.get("call_bid"))
+            long_ask = _decimal_float(long_row.get("call_ask"))
+            short_vol = short_row.get("call_vol")
+            long_vol = long_row.get("call_vol")
+            short_oi = short_row.get("call_oi")
+            long_oi = long_row.get("call_oi")
+        else:
+            short_bid = _decimal_float(short_row.get("put_bid"))
+            short_ask = _decimal_float(short_row.get("put_ask"))
+            long_bid = _decimal_float(long_row.get("put_bid"))
+            long_ask = _decimal_float(long_row.get("put_ask"))
+            short_vol = short_row.get("put_vol")
+            long_vol = long_row.get("put_vol")
+            short_oi = short_row.get("put_oi")
+            long_oi = long_row.get("put_oi")
+        if None in (short_bid, short_ask, long_bid, long_ask):
+            return None
+        bid_credit = round(short_bid - long_ask, 2)
+        ask_credit = round(short_ask - long_bid, 2)
+        mark_credit = round(_mid(short_bid, short_ask) - _mid(long_bid, long_ask), 2)
+        if mark_credit <= 0 or mark_credit > SPREAD_MAX_CREDIT:
+            return None
+        return {
+            "side": side,
+            "short_strike": short_strike,
+            "long_strike": long_strike,
+            "width": round(abs(long_strike - short_strike), 2),
+            "distance_from_spx": round(abs(short_strike - spx_price), 2),
+            "bid_credit": bid_credit,
+            "ask_credit": ask_credit,
+            "mark_credit": mark_credit,
+            "short_volume": short_vol,
+            "long_volume": long_vol,
+            "short_oi": short_oi,
+            "long_oi": long_oi,
+        }
+
+    call_spreads = []
+    put_spreads = []
+    for short in strikes:
+        call_long = round(short + SPREAD_WIDTH, 4)
+        if short > spx_price and call_long in strike_set:
+            entry = spread_entry("call", short, call_long)
+            if entry:
+                call_spreads.append(entry)
+        put_long = round(short - SPREAD_WIDTH, 4)
+        if short < spx_price and put_long in strike_set:
+            entry = spread_entry("put", short, put_long)
+            if entry:
+                put_spreads.append(entry)
+
+    call_spreads.sort(key=lambda x: (-x["mark_credit"], -x["distance_from_spx"]))
+    put_spreads.sort(key=lambda x: (-x["mark_credit"], -x["distance_from_spx"]))
+    return {
+        "call_credit_spreads": call_spreads[:SPREAD_MAX_ROWS_PER_SIDE],
+        "put_credit_spreads": put_spreads[:SPREAD_MAX_ROWS_PER_SIDE],
+    }
 
 
 def _resolve_account_id(secret: str, account_id: str | None) -> str:
@@ -109,91 +383,35 @@ def _fetch_snapshot():
         config=PublicApiClientConfiguration(default_account_number=account_id),
     )
     try:
-        # SPX quote (underlying price)
-        quotes = client.get_quotes([
-            OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX),
-        ])
-        spx_price = None
-        if quotes and len(quotes) > 0:
-            spx_price = _decimal_float(getattr(quotes[0], "last", None))
+        now_utc = _now_utc()
+        spx_price, quote_ts = _get_quote_price(client, now_utc)
+        expiration, by_strike, chain_ts = _get_chain_data(client, now_utc)
+        strikes = _windowed_strikes(by_strike, spx_price)
+        ts_iso = _iso_utc(now_utc)
 
-        expiration = _resolve_expiration(client)
-        if not expiration:
-            raise HTTPException(status_code=502, detail="No SPX expirations")
-
-        request = OptionChainRequest(
-            instrument=OrderInstrument(symbol=SYMBOL, type=InstrumentType.INDEX),
-            expiration_date=expiration,
-        )
-        chain = client.get_option_chain(request)
-        calls = getattr(chain, "calls", []) or []
-        puts = getattr(chain, "puts", []) or []
-
-        # Merge by strike: strike -> { call_*, put_* }
-        by_strike = {}
-        for opt in calls:
-            osi = opt.instrument.symbol if hasattr(opt, "instrument") else ""
-            strike = parse_osi_symbol(osi)
-            if strike is None:
-                continue
-            by_strike.setdefault(strike, {
-                "strike": strike,
-                "call_oi": None, "put_oi": None,
-                "call_vol": None, "put_vol": None,
-                "call_bid": None, "call_ask": None,
-                "put_bid": None, "put_ask": None,
-            })
-            by_strike[strike]["call_oi"] = getattr(opt, "open_interest", None)
-            by_strike[strike]["call_vol"] = getattr(opt, "volume", None)
-            by_strike[strike]["call_bid"] = _decimal_float(getattr(opt, "bid", None))
-            by_strike[strike]["call_ask"] = _decimal_float(getattr(opt, "ask", None))
-
-        for opt in puts:
-            osi = opt.instrument.symbol if hasattr(opt, "instrument") else ""
-            strike = parse_osi_symbol(osi)
-            if strike is None:
-                continue
-            by_strike.setdefault(strike, {
-                "strike": strike,
-                "call_oi": None, "put_oi": None,
-                "call_vol": None, "put_vol": None,
-                "call_bid": None, "call_ask": None,
-                "put_bid": None, "put_ask": None,
-            })
-            by_strike[strike]["put_oi"] = getattr(opt, "open_interest", None)
-            by_strike[strike]["put_vol"] = getattr(opt, "volume", None)
-            by_strike[strike]["put_bid"] = _decimal_float(getattr(opt, "bid", None))
-            by_strike[strike]["put_ask"] = _decimal_float(getattr(opt, "ask", None))
-
-        strikes_list = sorted(by_strike.keys(), reverse=True)  # highest strike first
-        if spx_price is not None and strikes_list:
-            # Restrict to ATM ± ATM_STRIKES
-            atm_idx = min(range(len(strikes_list)), key=lambda i: abs(strikes_list[i] - spx_price))
-            lo = max(0, atm_idx - ATM_STRIKES)
-            hi = min(len(strikes_list), atm_idx + ATM_STRIKES + 1)
-            strikes_list = strikes_list[lo:hi]
-        strikes = [by_strike[s] for s in strikes_list]
-
-        now_utc = datetime.utcnow()
-        ts_iso = now_utc.isoformat() + "Z"
-
-        # Append to rolling buffer (slim: strike, put_vol, call_vol only)
-        slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in strikes]
+        # Append full-chain slim snapshot for analytics.
+        full_rows = [by_strike[s] for s in sorted(by_strike.keys())]
+        slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in full_rows]
         _snapshot_buffer.append((ts_iso, slim))
-        # Prune older than SNAPSHOT_BUFFER_MAX_AGE_MINUTES (naive UTC)
-        cutoff = now_utc - timedelta(minutes=SNAPSHOT_BUFFER_MAX_AGE_MINUTES)
-        while _snapshot_buffer:
-            first_ts = datetime.fromisoformat(_snapshot_buffer[0][0].replace("Z", ""))
-            if first_ts < cutoff:
-                _snapshot_buffer.popleft()
-            else:
-                break
+        _prune_buffer(now_utc)
+
+        em = _compute_expected_move(by_strike, spx_price) or {}
+        hot_calls, hot_puts = _compute_hot_strikes(full_rows, target_minutes=5, top_n=HOT_STRIKES_TOP_N)
+        spread_scanner = _compute_spread_scanner(by_strike, spx_price)
 
         return {
             "expiration": expiration,
             "spx_price": spx_price,
             "timestamp": ts_iso,
+            "quote_timestamp": quote_ts,
+            "chain_timestamp": chain_ts,
+            "quote_refresh_seconds": QUOTE_REFRESH_SECONDS,
+            "chain_refresh_seconds": CHAIN_REFRESH_SECONDS,
             "strikes": strikes,
+            **em,
+            "hot_strikes_call": hot_calls,
+            "hot_strikes_put": hot_puts,
+            "spread_scanner": spread_scanner,
         }
     finally:
         client.close()

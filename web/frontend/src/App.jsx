@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 
 const API_SNAPSHOT = '/api/snapshot'
 const BAR_MAX_PX = 95
-const AUTO_REFRESH_MS = 60_000
-const LIVE_THRESHOLD_MS = 90_000
+const AUTO_REFRESH_MS = 10_000
+const QUOTE_LIVE_THRESHOLD_MS = 25_000
 const TOP_VOLUME_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 
@@ -29,12 +29,16 @@ function formatInt(n) {
   return Number(n).toLocaleString()
 }
 
-function getConnectionStatus(snapshot, lastSuccessAt, error, loading) {
+function formatSigned(n) {
+  if (n == null) return '--'
+  return `${n > 0 ? '+' : ''}${formatInt(n)}`
+}
+
+function getConnectionStatus(snapshot, quoteAgeMs, error, loading) {
   if (error && !snapshot) return 'error'
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'error'
-  if (!snapshot || lastSuccessAt == null) return null
-  const age = Date.now() - lastSuccessAt
-  return age <= LIVE_THRESHOLD_MS ? 'live' : 'stale'
+  if (!snapshot || quoteAgeMs == null) return null
+  return quoteAgeMs <= QUOTE_LIVE_THRESHOLD_MS ? 'live' : 'stale'
 }
 
 export default function App() {
@@ -108,12 +112,36 @@ export default function App() {
     )
   }
 
-  const { expiration, spx_price, timestamp, strikes = [] } = snapshot || {}
-  const connectionStatus = getConnectionStatus(snapshot, lastSuccessAt, error, loading)
-  const updatedAgo =
-    lastSuccessAt != null
-      ? Math.max(0, Math.floor((Date.now() - lastSuccessAt) / 1000))
-      : null
+  const {
+    expiration,
+    spx_price,
+    timestamp,
+    quote_timestamp,
+    chain_timestamp,
+    expected_move,
+    em_low,
+    em_high,
+    em_strike,
+    em_call_mid,
+    em_put_mid,
+    quote_refresh_seconds,
+    chain_refresh_seconds,
+    hot_strikes_call = [],
+    hot_strikes_put = [],
+    spread_scanner = {},
+    strikes = [],
+  } = snapshot || {}
+  const callCreditSpreads = spread_scanner.call_credit_spreads || []
+  const putCreditSpreads = spread_scanner.put_credit_spreads || []
+
+  const quoteUpdatedAt = quote_timestamp ? new Date(quote_timestamp).getTime() : lastSuccessAt
+  const chainUpdatedAt = chain_timestamp ? new Date(chain_timestamp).getTime() : lastSuccessAt
+  const quoteAgeMs = quoteUpdatedAt != null ? Math.max(0, Date.now() - quoteUpdatedAt) : null
+  const chainAgeMs = chainUpdatedAt != null ? Math.max(0, Date.now() - chainUpdatedAt) : null
+  const quoteUpdatedAgo = quoteAgeMs != null ? Math.floor(quoteAgeMs / 1000) : null
+  const chainUpdatedAgo = chainAgeMs != null ? Math.floor(chainAgeMs / 1000) : null
+  const connectionStatus = getConnectionStatus(snapshot, quoteAgeMs, error, loading)
+
   const tsDisplay = formatTimestamp(timestamp)
   const maxVol = strikes.length
     ? Math.max(
@@ -155,21 +183,37 @@ export default function App() {
               <span className={`status-pill ${connectionStatus}`}>
                 {connectionStatus === 'live' ? 'LIVE' : connectionStatus === 'stale' ? 'STALE' : 'Offline'}
               </span>
-              {updatedAgo != null && connectionStatus !== 'error' && (
-                <span className="meta">Updated {updatedAgo}s ago</span>
+              {quoteUpdatedAgo != null && connectionStatus !== 'error' && (
+                <span className="meta">Quote {quoteUpdatedAgo}s ago</span>
               )}
             </>
           )}
           <span className="spx-label">SPX</span>
           <span className="spx-price">{formatPrice(spx_price)} $</span>
-          <span className="meta">last price {tsDisplay}</span>
-          <span className="meta">timestamp: {tsDisplay}</span>
+          <span className="meta">Quote ts: {formatTimestamp(quote_timestamp || timestamp)}</span>
+          <span className="meta">Chain ts: {formatTimestamp(chain_timestamp || timestamp)}</span>
           <span className="metrics">
-            <span>dte0</span>
+            <span>dte0 / exp {expiration || '--'}</span>
+            <span>quote refresh ~{quote_refresh_seconds || 10}s</span>
+            <span>chain refresh ~{chain_refresh_seconds || 60}s</span>
+            {quoteUpdatedAgo != null && <span>quote age {quoteUpdatedAgo}s</span>}
+            {chainUpdatedAgo != null && <span>chain age {chainUpdatedAgo}s</span>}
           </span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>
             Refresh
           </button>
+        </div>
+        <div className="em-card">
+          <div className="em-main">
+            <span className="em-label">Expected Move (to expiration)</span>
+            <span className="em-value">{expected_move != null ? `±${formatPrice(expected_move)}` : '--'}</span>
+          </div>
+          <div className="em-meta">
+            <span>Range: {em_low != null && em_high != null ? `${formatPrice(em_low)} - ${formatPrice(em_high)}` : '--'}</span>
+            <span>ATM strike: {em_strike != null ? formatPrice(em_strike) : '--'}</span>
+            <span>Call mid: {em_call_mid != null ? formatPrice(em_call_mid) : '--'}</span>
+            <span>Put mid: {em_put_mid != null ? formatPrice(em_put_mid) : '--'}</span>
+          </div>
         </div>
         <div className="toggles">
           <label><input type="checkbox" defaultChecked readOnly /><span>volume</span></label>
@@ -285,6 +329,126 @@ export default function App() {
             })}
           </tbody>
         </table>
+      </section>
+
+      <section className="main-section">
+        <div className="section-head">
+          <span className="section-title">Hot strikes (5m volume delta)</span>
+        </div>
+        <div className="split-panels">
+          <div>
+            <div className="sub-title">Calls</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Now</th>
+                  <th>5m ago</th>
+                  <th>Δ 5m</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hot_strikes_call.length === 0 ? (
+                  <tr><td colSpan="4" className="empty-cell">No call hot strikes yet</td></tr>
+                ) : hot_strikes_call.map((row) => (
+                  <tr key={`hc-${row.strike}`}>
+                    <td>{formatPrice(row.strike)}</td>
+                    <td>{formatInt(row.current_vol)}</td>
+                    <td>{formatInt(row.vol_5m_ago)}</td>
+                    <td className="netto pos">{formatSigned(row.delta_5m)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="sub-title">Puts</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Now</th>
+                  <th>5m ago</th>
+                  <th>Δ 5m</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hot_strikes_put.length === 0 ? (
+                  <tr><td colSpan="4" className="empty-cell">No put hot strikes yet</td></tr>
+                ) : hot_strikes_put.map((row) => (
+                  <tr key={`hp-${row.strike}`}>
+                    <td>{formatPrice(row.strike)}</td>
+                    <td>{formatInt(row.current_vol)}</td>
+                    <td>{formatInt(row.vol_5m_ago)}</td>
+                    <td className="netto pos">{formatSigned(row.delta_5m)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="main-section">
+        <div className="section-head">
+          <span className="section-title">Far OTM vertical spreads (5-wide, mark ≤ 0.50)</span>
+        </div>
+        <div className="split-panels">
+          <div>
+            <div className="sub-title">Call credit spreads</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Short/Long</th>
+                  <th>Mark</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>Dist</th>
+                </tr>
+              </thead>
+              <tbody>
+                {callCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="5" className="empty-cell">No call spreads matching filter</td></tr>
+                ) : callCreditSpreads.map((s) => (
+                  <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
+                    <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
+                    <td>{formatPrice(s.mark_credit)}</td>
+                    <td>{formatPrice(s.bid_credit)}</td>
+                    <td>{formatPrice(s.ask_credit)}</td>
+                    <td>{formatPrice(s.distance_from_spx)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="sub-title">Put credit spreads</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Short/Long</th>
+                  <th>Mark</th>
+                  <th>Bid</th>
+                  <th>Ask</th>
+                  <th>Dist</th>
+                </tr>
+              </thead>
+              <tbody>
+                {putCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="5" className="empty-cell">No put spreads matching filter</td></tr>
+                ) : putCreditSpreads.map((s) => (
+                  <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
+                    <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
+                    <td>{formatPrice(s.mark_credit)}</td>
+                    <td>{formatPrice(s.bid_credit)}</td>
+                    <td>{formatPrice(s.ask_credit)}</td>
+                    <td>{formatPrice(s.distance_from_spx)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
     </>
   )
