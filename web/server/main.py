@@ -45,7 +45,6 @@ CHAIN_REFRESH_SECONDS = 60
 SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
 HOT_STRIKES_TOP_N = 8
 SPREAD_WIDTH = 5.0
-SPREAD_MAX_CREDIT = 0.50
 SPREAD_MAX_ROWS_PER_SIDE = 15
 _snapshot_buffer = deque(maxlen=512)  # (iso_ts, strikes_slim: list of {strike, put_vol, call_vol})
 _quote_cache = {"fetched_at": None, "spx_price": None, "timestamp": None}
@@ -308,7 +307,8 @@ def _compute_spread_scanner(by_strike, spx_price):
         bid_credit = round(short_bid - long_ask, 2)
         ask_credit = round(short_ask - long_bid, 2)
         mark_credit = round(_mid(short_bid, short_ask) - _mid(long_bid, long_ask), 2)
-        if mark_credit <= 0 or mark_credit > SPREAD_MAX_CREDIT:
+        # Let frontend control credit-range filtering; keep only sensible positive credits.
+        if mark_credit <= 0:
             return None
         return {
             "side": side,
