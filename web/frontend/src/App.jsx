@@ -58,6 +58,13 @@ function getConnectionStatus(snapshot, quoteAgeMs, error) {
   return quoteAgeMs <= QUOTE_LIVE_THRESHOLD_MS ? 'live' : 'stale'
 }
 
+function buildDocumentTitle(symbol, price, loading, error) {
+  const safeSymbol = symbol || 'SPX'
+  if (loading && price == null) return `${safeSymbol} --`
+  if (error && price == null) return `${safeSymbol} --`
+  return `${safeSymbol} ${formatPrice(price)}`
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
@@ -113,6 +120,14 @@ export default function App() {
     const id = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(id)
   }, [snapshot])
+
+  const titleSymbol = snapshot?.symbol || selectedSymbol
+  const titlePrice = snapshot?.symbol_price ?? snapshot?.spx_price
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.title = buildDocumentTitle(titleSymbol, titlePrice, loading, error)
+  }, [titleSymbol, titlePrice, loading, error])
 
   if (loading && !snapshot) {
     return (
