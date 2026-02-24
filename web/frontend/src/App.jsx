@@ -49,6 +49,8 @@ export default function App() {
   const [, setTick] = useState(0)
   const [markLastMin, setMarkLastMin] = useState(0)
   const [showDelta, setShowDelta] = useState(false)
+  const [spreadMinCredit, setSpreadMinCredit] = useState(0.25)
+  const [spreadMaxCredit, setSpreadMaxCredit] = useState(0.5)
 
   const fetchSnapshot = useCallback(async () => {
     setError(null)
@@ -133,6 +135,16 @@ export default function App() {
   } = snapshot || {}
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
+  const loCredit = Math.min(spreadMinCredit, spreadMaxCredit)
+  const hiCredit = Math.max(spreadMinCredit, spreadMaxCredit)
+  const filteredCallCreditSpreads = callCreditSpreads.filter((s) => {
+    const mark = Number(s.mark_credit)
+    return Number.isFinite(mark) && mark >= loCredit && mark <= hiCredit
+  })
+  const filteredPutCreditSpreads = putCreditSpreads.filter((s) => {
+    const mark = Number(s.mark_credit)
+    return Number.isFinite(mark) && mark >= loCredit && mark <= hiCredit
+  })
 
   const quoteUpdatedAt = quote_timestamp ? new Date(quote_timestamp).getTime() : lastSuccessAt
   const chainUpdatedAt = chain_timestamp ? new Date(chain_timestamp).getTime() : lastSuccessAt
@@ -392,6 +404,33 @@ export default function App() {
       <section className="main-section">
         <div className="section-head">
           <span className="section-title">Far OTM vertical spreads (5-wide, mark ≤ 0.50)</span>
+          <div className="section-controls spread-filters">
+            <label>
+              Credit min:
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={spreadMinCredit}
+                onChange={(e) => setSpreadMinCredit(Number(e.target.value || 0))}
+              />
+            </label>
+            <label>
+              Credit max:
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={spreadMaxCredit}
+                onChange={(e) => setSpreadMaxCredit(Number(e.target.value || 0))}
+              />
+            </label>
+            <button type="button" className="btn-refresh" onClick={() => { setSpreadMinCredit(0.25); setSpreadMaxCredit(0.5) }}>
+              0.25-0.50
+            </button>
+          </div>
         </div>
         <div className="split-panels">
           <div>
@@ -407,9 +446,9 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {callCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="5" className="empty-cell">No call spreads matching filter</td></tr>
-                ) : callCreditSpreads.map((s) => (
+                {filteredCallCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="5" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                ) : filteredCallCreditSpreads.map((s) => (
                   <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>
@@ -434,9 +473,9 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {putCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="5" className="empty-cell">No put spreads matching filter</td></tr>
-                ) : putCreditSpreads.map((s) => (
+                {filteredPutCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="5" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                ) : filteredPutCreditSpreads.map((s) => (
                   <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>

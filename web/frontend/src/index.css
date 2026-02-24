@@ -57,6 +57,19 @@ body {
 .section-controls { font-size: 10px; color: #666; display: flex; gap: 6px; align-items: center; }
 .section-controls label { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; }
 .section-controls select { padding: 1px 4px; font-size: 10px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; }
+.spread-filters {
+  gap: 8px;
+}
+.spread-filters input {
+  width: 70px;
+  margin-left: 4px;
+  padding: 1px 4px;
+  font-size: 10px;
+  background: #2a2a2a;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 4px;
+}
 .strike-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 11px; }
 .strike-table th, .strike-table td { padding: 2px 4px; vertical-align: middle; }
 .strike-table th { color: #666; font-weight: 500; text-align: right; font-size: 10px; }
