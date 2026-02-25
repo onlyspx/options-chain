@@ -45,7 +45,9 @@ SUPPORTED_SYMBOLS = {
     "SPY": "EQUITY",
     "QQQ": "EQUITY",
 }
-ATM_STRIKES = 15  # show ATM ± N strikes
+DEFAULT_ATM_STRIKES = 15  # fallback ATM ± N strikes
+MID_DTE_ATM_STRIKES = 25  # for 2-4 days to expiry
+LONG_DTE_ATM_STRIKES = 35  # for 5+ days to expiry
 QUOTE_REFRESH_SECONDS = 10
 CHAIN_REFRESH_SECONDS = 60
 SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
@@ -198,13 +200,31 @@ def _build_by_strike(calls, puts):
     return by_strike
 
 
-def _windowed_strikes(by_strike, spx_price):
+def _days_to_expiry(expiration: str):
+    try:
+        exp_date = date.fromisoformat(expiration)
+    except (TypeError, ValueError):
+        return None
+    return max(0, (exp_date - date.today()).days)
+
+
+def _strike_window_size(days_to_expiry: int | None):
+    if days_to_expiry is None:
+        return DEFAULT_ATM_STRIKES
+    if days_to_expiry <= 1:
+        return DEFAULT_ATM_STRIKES
+    if days_to_expiry <= 4:
+        return MID_DTE_ATM_STRIKES
+    return LONG_DTE_ATM_STRIKES
+
+
+def _windowed_strikes(by_strike, spx_price, atm_strikes: int = DEFAULT_ATM_STRIKES):
     strikes_list = sorted(by_strike.keys(), reverse=True)
     if spx_price is None or not strikes_list:
         return [by_strike[s] for s in strikes_list]
     atm_idx = min(range(len(strikes_list)), key=lambda i: abs(strikes_list[i] - spx_price))
-    lo = max(0, atm_idx - ATM_STRIKES)
-    hi = min(len(strikes_list), atm_idx + ATM_STRIKES + 1)
+    lo = max(0, atm_idx - atm_strikes)
+    hi = min(len(strikes_list), atm_idx + atm_strikes + 1)
     return [by_strike[s] for s in strikes_list[lo:hi]]
 
 
@@ -461,7 +481,9 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             instrument_type=instrument_type,
             expiration=expiration,
         )
-        strikes = _windowed_strikes(by_strike, symbol_price)
+        days_to_expiry = _days_to_expiry(expiration)
+        strike_window_size = _strike_window_size(days_to_expiry)
+        strikes = _windowed_strikes(by_strike, symbol_price, atm_strikes=strike_window_size)
         ts_iso = _iso_utc(now_utc)
 
         # Append full-chain slim snapshot for analytics.
@@ -482,6 +504,8 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             "dte": dte,
             "expiry_mode": expiry_mode,
             "expiration": expiration,
+            "days_to_expiry": days_to_expiry,
+            "strike_window_size": strike_window_size,
             "expirations": exp_targets,
             "symbol_price": symbol_price,
             "spx_price": symbol_price,
