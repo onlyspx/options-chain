@@ -5,6 +5,7 @@ const BAR_MAX_PX = 95
 const AUTO_REFRESH_MS = 10_000
 const QUOTE_LIVE_THRESHOLD_MS = 25_000
 const TOP_VOLUME_N = 5
+const TOP_OI_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX']
 const EXPIRY_OPTIONS = [
@@ -234,6 +235,20 @@ export default function App() {
       .slice(0, TOP_VOLUME_N)
       .map((s) => s.strike)
   )
+  const highPutOiStrikes = new Set(
+    [...strikes]
+      .filter((s) => s.put_oi != null)
+      .sort((a, b) => Number(b.put_oi ?? 0) - Number(a.put_oi ?? 0))
+      .slice(0, TOP_OI_N)
+      .map((s) => s.strike)
+  )
+  const highCallOiStrikes = new Set(
+    [...strikes]
+      .filter((s) => s.call_oi != null)
+      .sort((a, b) => Number(b.call_oi ?? 0) - Number(a.call_oi ?? 0))
+      .slice(0, TOP_OI_N)
+      .map((s) => s.strike)
+  )
 
   return (
     <>
@@ -316,7 +331,7 @@ export default function App() {
         </div>
         <div className="toggles">
           <label><input type="checkbox" defaultChecked readOnly /><span>volume</span></label>
-          <label><input type="checkbox" /><span>open interest</span></label>
+          <label><input type="checkbox" defaultChecked readOnly /><span>open interest</span></label>
         </div>
       </header>
 
@@ -353,11 +368,13 @@ export default function App() {
           <thead>
             <tr>
               <th style={{ textAlign: 'right' }}>Δ put</th>
-              <th style={{ textAlign: 'right' }}>put</th>
+              <th style={{ textAlign: 'right' }}>OI</th>
+              <th style={{ textAlign: 'right' }}>Volume</th>
               <th className="bar-cell" />
               <th className="strike-col">strike</th>
               <th className="bar-cell" />
-              <th style={{ textAlign: 'left' }}>call</th>
+              <th style={{ textAlign: 'left' }}>Volume</th>
+              <th style={{ textAlign: 'right' }}>OI</th>
               <th>Δ call</th>
               <th style={{ textAlign: 'right' }}>netto</th>
               <th style={{ textAlign: 'right' }}>Σ</th>
@@ -376,6 +393,8 @@ export default function App() {
               const deltaCall = row.delta_call
               const isHighPutVol = highPutVolumeStrikes.has(row.strike)
               const isHighCallVol = highCallVolumeStrikes.has(row.strike)
+              const isHighPutOi = highPutOiStrikes.has(row.strike)
+              const isHighCallOi = highCallOiStrikes.has(row.strike)
               return (
                 <tr key={row.strike} className={isAtm ? 'atm' : ''}>
                   <td
@@ -392,6 +411,7 @@ export default function App() {
                   >
                     {deltaPut != null ? (deltaPut > 0 ? '+' : '') + formatInt(deltaPut) : '—'}
                   </td>
+                  <td className={`put-oi-num ${isHighPutOi ? 'high-put-oi' : ''}`}>{formatInt(row.put_oi)}</td>
                   <td className={`put-num ${isHighPutVol ? 'high-put-volume' : ''}`}>{formatInt(row.put_vol)}</td>
                   <td className={`bar-cell ${isHighPutVol ? 'high-put-volume' : ''}`}>
                     <div className="bar-wrap put">
@@ -405,6 +425,7 @@ export default function App() {
                     </div>
                   </td>
                   <td className={`call-num ${isHighCallVol ? 'high-call-volume' : ''}`}>{formatInt(row.call_vol)}</td>
+                  <td className={`call-oi-num ${isHighCallOi ? 'high-call-oi' : ''}`}>{formatInt(row.call_oi)}</td>
                   <td
                     className={
                       deltaCall != null

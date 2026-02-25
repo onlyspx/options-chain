@@ -78,7 +78,9 @@ body {
 .strike-table tr:hover .bar-cell { opacity: 0.95; }
 .strike-table tr.atm .strike-col { color: #fbbf24; }
 .put-num { color: #fb923c; text-align: right; }
+.put-oi-num { color: #fdba74; text-align: right; }
 .call-num { color: #60a5fa; text-align: left; }
+.call-oi-num { color: #93c5fd; text-align: right; }
 .bar-cell { width: 100px; padding: 0 3px; vertical-align: middle; }
 .bar-wrap { display: flex; align-items: center; height: 16px; width: 100%; }
 .bar-wrap.put { flex-direction: row; justify-content: flex-end; }
@@ -97,6 +99,14 @@ body {
 }
 .strike-table td.call-num.high-call-volume {
   border-right: 2px solid #2563eb;
+}
+.strike-table td.high-put-oi {
+  background: rgba(234, 88, 12, 0.14);
+  border-left: 2px solid #f97316;
+}
+.strike-table td.high-call-oi {
+  background: rgba(37, 99, 235, 0.14);
+  border-right: 2px solid #3b82f6;
 }
 .netto { text-align: right; }
 .netto.neg { color: #f87171; }
