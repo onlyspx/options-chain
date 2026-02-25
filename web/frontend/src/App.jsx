@@ -47,6 +47,35 @@ function formatPct(n) {
   return `${Number(n).toFixed(1)}%`
 }
 
+function formatVolPct(n) {
+  if (n == null) return '--'
+  return `${(Number(n) * 100).toFixed(1)}%`
+}
+
+function formatSignedVolPct(n) {
+  if (n == null) return '--'
+  const value = Number(n) * 100
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(1)}%`
+}
+
+function formatRatio(n) {
+  if (n == null) return '--'
+  return Number(n).toFixed(3)
+}
+
+function formatDelta(n) {
+  if (n == null) return '--'
+  const value = Number(n)
+  return `${value > 0 ? '+' : ''}${value.toFixed(3)}`
+}
+
+function formatSlope(n) {
+  if (n == null) return '--'
+  const value = Number(n)
+  return `${value > 0 ? '+' : ''}${value.toFixed(4)}`
+}
+
 function formatExpiryDateShort(isoDate) {
   if (!isoDate) return '--'
   try {
@@ -189,6 +218,7 @@ export default function App() {
     hot_strikes_call = [],
     hot_strikes_put = [],
     spread_scanner = {},
+    skew_analysis = null,
     strikes = [],
   } = snapshot || {}
   const activeSymbol = symbol || selectedSymbol
@@ -208,6 +238,21 @@ export default function App() {
     const mark = Number(s.mark_credit)
     return Number.isFinite(mark) && mark >= loCredit && mark <= hiCredit
   })
+  const skewMetrics = skew_analysis?.metrics || {}
+  const skewNodes = skew_analysis?.nodes || {}
+  const skewDiagnostics = skew_analysis?.diagnostics || {}
+  const skewStatus = skew_analysis?.status || 'unavailable'
+  const skewWarnings = skewDiagnostics.warnings || []
+  const skewNodeRows = [
+    { key: 'put_10d', label: '10Δ Put' },
+    { key: 'put_25d', label: '25Δ Put' },
+    { key: 'atm_50d', label: 'ATM 50Δ' },
+    { key: 'call_25d', label: '25Δ Call' },
+    { key: 'call_10d', label: '10Δ Call' },
+  ]
+  const rrClass = skewMetrics.rr_25 == null ? 'skew-value-neutral' : skewMetrics.rr_25 < 0 ? 'skew-value-warm' : skewMetrics.rr_25 > 0 ? 'skew-value-cool' : 'skew-value-neutral'
+  const ratioClass = skewMetrics.put_call_iv_ratio_25 == null ? 'skew-value-neutral' : skewMetrics.put_call_iv_ratio_25 > 1 ? 'skew-value-warm' : skewMetrics.put_call_iv_ratio_25 < 1 ? 'skew-value-cool' : 'skew-value-neutral'
+  const asymClass = skewMetrics.slope_asymmetry == null ? 'skew-value-neutral' : skewMetrics.slope_asymmetry < 0 ? 'skew-value-warm' : skewMetrics.slope_asymmetry > 0 ? 'skew-value-cool' : 'skew-value-neutral'
 
   const quoteUpdatedAt = quote_timestamp ? new Date(quote_timestamp).getTime() : lastSuccessAt
   const chainUpdatedAt = chain_timestamp ? new Date(chain_timestamp).getTime() : lastSuccessAt
@@ -584,6 +629,102 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="main-section skew-section">
+        <div className="section-head">
+          <span className="section-title">Skew Deep Dive</span>
+          <span className={`skew-status ${skewStatus}`}>{String(skewStatus).toUpperCase()}</span>
+          <span className="meta">{skew_analysis?.method || 'delta_iv_nodes'}</span>
+        </div>
+        <div className="skew-metrics-grid">
+          <div className="skew-metric-card">
+            <div className="skew-metric-label">ATM IV</div>
+            <div className="skew-metric-value skew-value-neutral">{formatVolPct(skewMetrics.atm_iv)}</div>
+          </div>
+          <div className="skew-metric-card">
+            <div className="skew-metric-label">25Δ RR</div>
+            <div className={`skew-metric-value ${rrClass}`}>{formatSignedVolPct(skewMetrics.rr_25)}</div>
+          </div>
+          <div className="skew-metric-card">
+            <div className="skew-metric-label">25Δ BF</div>
+            <div className="skew-metric-value skew-value-neutral">{formatSignedVolPct(skewMetrics.bf_25)}</div>
+          </div>
+          <div className="skew-metric-card">
+            <div className="skew-metric-label">25Δ Put/Call IV Ratio</div>
+            <div className={`skew-metric-value ${ratioClass}`}>{formatRatio(skewMetrics.put_call_iv_ratio_25)}</div>
+          </div>
+          <div className="skew-metric-card">
+            <div className="skew-metric-label">Wing Slope Asymmetry</div>
+            <div className={`skew-metric-value ${asymClass}`}>{formatSlope(skewMetrics.slope_asymmetry)}</div>
+          </div>
+        </div>
+        <div className="skew-help-box">
+          <div className="skew-help-title">How to read these (beginner)</div>
+          <div className="skew-help-row">
+            <span className="skew-help-label">ATM IV</span>
+            <span>Market’s baseline volatility near current price. Higher = bigger expected moves.</span>
+          </div>
+          <div className="skew-help-row">
+            <span className="skew-help-label">25Δ RR</span>
+            <span>Call IV minus Put IV at 25Δ. Negative means puts are pricier (more downside fear).</span>
+          </div>
+          <div className="skew-help-row">
+            <span className="skew-help-label">25Δ BF</span>
+            <span>Wing average IV vs ATM IV. Higher means wings are richer than ATM; near 0 means similar.</span>
+          </div>
+          <div className="skew-help-row">
+            <span className="skew-help-label">25Δ Put/Call IV Ratio</span>
+            <span>Put IV divided by Call IV at 25Δ. Above 1 = puts richer; below 1 = calls richer.</span>
+          </div>
+          <div className="skew-help-row">
+            <span className="skew-help-label">Wing Slope Asymmetry</span>
+            <span>How unbalanced downside vs upside wing steepness is. Bigger absolute value = stronger imbalance.</span>
+          </div>
+          <div className="skew-help-tip">
+            Tip: Use RR + Put/Call Ratio first for direction; use BF/Asymmetry as context.
+          </div>
+        </div>
+        <div className="split-panels">
+          <div>
+            <div className="sub-title">Delta/IV Nodes</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Strike</th>
+                  <th>Delta</th>
+                  <th>IV</th>
+                </tr>
+              </thead>
+              <tbody>
+                {skewNodeRows.map((entry) => {
+                  const node = skewNodes[entry.key] || {}
+                  return (
+                    <tr key={entry.key}>
+                      <td>{entry.label}</td>
+                      <td>{formatPrice(node.strike)}</td>
+                      <td>{formatDelta(node.delta)}</td>
+                      <td>{formatVolPct(node.iv)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="sub-title">Diagnostics</div>
+            <div className="skew-diagnostics">
+              <div>symbol {skew_analysis?.symbol || activeSymbol} / exp {skew_analysis?.expiration || expiration || '--'} / spot {formatPrice(skew_analysis?.spot ?? activePrice)}</div>
+              <div>dte {skew_analysis?.days_to_expiry ?? dte ?? '--'} / coverage {formatPct(skewDiagnostics.greeks_coverage_pct)}</div>
+              <div>available {Array.isArray(skewDiagnostics.available_nodes) && skewDiagnostics.available_nodes.length ? skewDiagnostics.available_nodes.join(', ') : '--'}</div>
+              <div>missing {Array.isArray(skewDiagnostics.missing_nodes) && skewDiagnostics.missing_nodes.length ? skewDiagnostics.missing_nodes.join(', ') : '--'}</div>
+              <div className="skew-warning">
+                warnings {skewWarnings.length ? skewWarnings.join(' | ') : '--'}
+              </div>
+            </div>
           </div>
         </div>
       </section>

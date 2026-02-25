@@ -52,6 +52,8 @@ QUOTE_REFRESH_SECONDS = 10
 CHAIN_REFRESH_SECONDS = 60
 SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
 HOT_STRIKES_TOP_N = 8
+SKEW_GREEKS_WINDOW_STRIKES = 30
+SKEW_MIN_COVERAGE_WARN_PCT = 60.0
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 _snapshot_buffers = {}  # (symbol, expiry_mode, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
@@ -472,6 +474,279 @@ def _get_option_greeks_map(client, now_utc: datetime, symbol: str, expiration: s
     return {sym: by_osi.get(sym, {}) for sym in symbols}
 
 
+def _select_skew_osi_symbols(
+    by_strike,
+    symbol_price,
+    window_strikes: int = SKEW_GREEKS_WINDOW_STRIKES,
+):
+    strikes = sorted(by_strike.keys())
+    if not strikes:
+        return []
+    spot = _decimal_float(symbol_price)
+    if spot is None:
+        atm_idx = len(strikes) // 2
+    else:
+        atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))
+    depth = max(1, int(window_strikes))
+    lo = max(0, atm_idx - depth)
+    hi = min(len(strikes), atm_idx + depth + 1)
+    symbols = []
+    for strike in strikes[lo:hi]:
+        row = by_strike.get(strike, {})
+        if row.get("call_osi"):
+            symbols.append(row.get("call_osi"))
+        if row.get("put_osi"):
+            symbols.append(row.get("put_osi"))
+    return sorted({s for s in symbols if s})
+
+
+def _round_or_none(value, digits=4):
+    if value is None:
+        return None
+    return round(value, digits)
+
+
+def _skew_node_payload(strike=None, delta=None, iv=None):
+    return {
+        "strike": _round_or_none(_decimal_float(strike), 2),
+        "delta": _round_or_none(_decimal_float(delta), 4),
+        "iv": _round_or_none(_decimal_float(iv), 4),
+    }
+
+
+def _select_delta_node(candidates, target_delta: float, spot: float | None, side: str):
+    if not candidates:
+        return _skew_node_payload()
+
+    def _sort_key(candidate):
+        strike = _decimal_float(candidate.get("strike"))
+        delta = _decimal_float(candidate.get("delta"))
+        if delta is None:
+            delta_dist = float("inf")
+        else:
+            delta_dist = abs(delta - target_delta)
+
+        if spot is not None and spot > 0 and strike is not None and strike > 0:
+            expected_side = strike < spot if side == "put" else strike > spot
+            side_penalty = 0 if expected_side else 1
+            moneyness_dist = abs(math.log(strike / spot))
+        else:
+            side_penalty = 0
+            moneyness_dist = float("inf")
+
+        strike_key = strike if strike is not None else float("inf")
+        return (delta_dist, side_penalty, moneyness_dist, strike_key)
+
+    best = min(candidates, key=_sort_key)
+    return _skew_node_payload(best.get("strike"), best.get("delta"), best.get("iv"))
+
+
+def _compute_skew_analysis(
+    by_strike,
+    greeks_by_osi,
+    symbol_price,
+    symbol: str,
+    expiration: str,
+    days_to_expiry: int | None,
+    requested_osi_symbols: list[str] | None = None,
+):
+    spot = _decimal_float(symbol_price)
+    if spot is None or spot <= 0:
+        return {
+            "status": "unavailable",
+            "method": "delta_iv_nodes",
+            "symbol": symbol,
+            "expiration": expiration,
+            "days_to_expiry": days_to_expiry,
+            "spot": spot,
+            "nodes": {
+                "put_10d": _skew_node_payload(),
+                "put_25d": _skew_node_payload(),
+                "atm_50d": _skew_node_payload(),
+                "call_25d": _skew_node_payload(),
+                "call_10d": _skew_node_payload(),
+            },
+            "metrics": {
+                "atm_iv": None,
+                "rr_25": None,
+                "bf_25": None,
+                "put_call_iv_ratio_25": None,
+                "put_wing_slope_25_atm": None,
+                "call_wing_slope_25_atm": None,
+                "slope_asymmetry": None,
+            },
+            "diagnostics": {
+                "available_nodes": [],
+                "missing_nodes": ["put_10d", "put_25d", "atm_50d", "call_25d", "call_10d"],
+                "greeks_coverage_pct": None,
+                "warnings": ["Spot price unavailable; cannot compute skew nodes."],
+            },
+        }
+
+    call_candidates = []
+    put_candidates = []
+    strikes_list = sorted(by_strike.keys())
+
+    for strike in strikes_list:
+        row = by_strike.get(strike, {})
+        for side in ("call", "put"):
+            osi_key = "call_osi" if side == "call" else "put_osi"
+            osi = row.get(osi_key)
+            if not osi:
+                continue
+            greek = greeks_by_osi.get(osi, {})
+            delta = _decimal_float(greek.get("delta"))
+            iv = _decimal_float(greek.get("implied_volatility"))
+            if delta is None:
+                continue
+            candidate = {
+                "strike": _decimal_float(strike),
+                "delta": delta,
+                "iv": iv,
+            }
+            if side == "call":
+                call_candidates.append(candidate)
+            else:
+                put_candidates.append(candidate)
+
+    coverage_pct = None
+    requested_symbols = sorted({s for s in (requested_osi_symbols or []) if s})
+    if requested_symbols:
+        covered_osi = 0
+        for osi in requested_symbols:
+            greek = greeks_by_osi.get(osi, {})
+            delta = _decimal_float(greek.get("delta"))
+            iv = _decimal_float(greek.get("implied_volatility"))
+            if delta is not None and iv is not None:
+                covered_osi += 1
+        coverage_pct = round((covered_osi / len(requested_symbols)) * 100.0, 1)
+
+    put_10d = _select_delta_node(put_candidates, -0.10, spot, "put")
+    put_25d = _select_delta_node(put_candidates, -0.25, spot, "put")
+    call_25d = _select_delta_node(call_candidates, 0.25, spot, "call")
+    call_10d = _select_delta_node(call_candidates, 0.10, spot, "call")
+
+    atm_strike = min(strikes_list, key=lambda s: abs(s - spot)) if strikes_list else None
+    atm_50d = _skew_node_payload()
+    if atm_strike is not None:
+        atm_row = by_strike.get(atm_strike, {})
+        call_greek = greeks_by_osi.get(atm_row.get("call_osi"), {}) if atm_row.get("call_osi") else {}
+        put_greek = greeks_by_osi.get(atm_row.get("put_osi"), {}) if atm_row.get("put_osi") else {}
+        call_iv = _decimal_float(call_greek.get("implied_volatility"))
+        put_iv = _decimal_float(put_greek.get("implied_volatility"))
+        call_delta = _decimal_float(call_greek.get("delta"))
+        put_delta = _decimal_float(put_greek.get("delta"))
+
+        if call_iv is not None and put_iv is not None:
+            atm_iv = (call_iv + put_iv) / 2.0
+            atm_delta = call_delta if call_delta is not None else put_delta
+        elif call_iv is not None:
+            atm_iv = call_iv
+            atm_delta = call_delta
+        elif put_iv is not None:
+            atm_iv = put_iv
+            atm_delta = put_delta
+        else:
+            atm_iv = None
+            atm_delta = call_delta if call_delta is not None else put_delta
+        atm_50d = _skew_node_payload(atm_strike, atm_delta, atm_iv)
+
+    nodes = {
+        "put_10d": put_10d,
+        "put_25d": put_25d,
+        "atm_50d": atm_50d,
+        "call_25d": call_25d,
+        "call_10d": call_10d,
+    }
+
+    iv_put_25 = _decimal_float(put_25d.get("iv"))
+    iv_call_25 = _decimal_float(call_25d.get("iv"))
+    iv_atm = _decimal_float(atm_50d.get("iv"))
+    k_put_25 = _decimal_float(put_25d.get("strike"))
+    k_call_25 = _decimal_float(call_25d.get("strike"))
+
+    rr_25 = None
+    if iv_call_25 is not None and iv_put_25 is not None:
+        rr_25 = iv_call_25 - iv_put_25
+
+    bf_25 = None
+    if iv_call_25 is not None and iv_put_25 is not None and iv_atm is not None:
+        bf_25 = 0.5 * (iv_call_25 + iv_put_25) - iv_atm
+
+    put_call_iv_ratio_25 = None
+    if iv_put_25 is not None and iv_call_25 is not None and iv_call_25 > 0:
+        put_call_iv_ratio_25 = iv_put_25 / iv_call_25
+
+    put_wing_slope = None
+    if (
+        iv_put_25 is not None
+        and iv_atm is not None
+        and k_put_25 is not None
+        and spot > 0
+        and k_put_25 > 0
+    ):
+        denom_put = math.log(k_put_25 / spot)
+        if abs(denom_put) > 1e-12:
+            put_wing_slope = (iv_put_25 - iv_atm) / denom_put
+
+    call_wing_slope = None
+    if (
+        iv_call_25 is not None
+        and iv_atm is not None
+        and k_call_25 is not None
+        and spot > 0
+        and k_call_25 > 0
+    ):
+        denom_call = math.log(k_call_25 / spot)
+        if abs(denom_call) > 1e-12:
+            call_wing_slope = (iv_call_25 - iv_atm) / denom_call
+
+    slope_asymmetry = None
+    if put_wing_slope is not None and call_wing_slope is not None:
+        slope_asymmetry = put_wing_slope - call_wing_slope
+
+    available_nodes = [name for name, node in nodes.items() if node.get("iv") is not None]
+    missing_nodes = [name for name, node in nodes.items() if node.get("iv") is None]
+    warnings = []
+    if missing_nodes:
+        warnings.append(f"Missing IV for nodes: {', '.join(missing_nodes)}")
+    if coverage_pct is not None and coverage_pct < SKEW_MIN_COVERAGE_WARN_PCT:
+        warnings.append("Low greeks coverage; skew metrics may be noisy.")
+
+    core_nodes = ("put_25d", "atm_50d", "call_25d")
+    if not available_nodes:
+        status = "unavailable"
+    elif all(nodes[name].get("iv") is not None for name in core_nodes):
+        status = "ok"
+    else:
+        status = "partial"
+
+    return {
+        "status": status,
+        "method": "delta_iv_nodes",
+        "symbol": symbol,
+        "expiration": expiration,
+        "days_to_expiry": days_to_expiry,
+        "spot": _round_or_none(spot, 2),
+        "nodes": nodes,
+        "metrics": {
+            "atm_iv": _round_or_none(iv_atm, 4),
+            "rr_25": _round_or_none(rr_25, 4),
+            "bf_25": _round_or_none(bf_25, 4),
+            "put_call_iv_ratio_25": _round_or_none(put_call_iv_ratio_25, 4),
+            "put_wing_slope_25_atm": _round_or_none(put_wing_slope, 6),
+            "call_wing_slope_25_atm": _round_or_none(call_wing_slope, 6),
+            "slope_asymmetry": _round_or_none(slope_asymmetry, 6),
+        },
+        "diagnostics": {
+            "available_nodes": available_nodes,
+            "missing_nodes": missing_nodes,
+            "greeks_coverage_pct": coverage_pct,
+            "warnings": warnings,
+        },
+    }
+
+
 def _attach_pop_to_spreads(spreads, side: str, by_strike, greeks_by_osi, symbol_price, days_to_expiry):
     t_years = max(days_to_expiry or 0, 1) / 365.0
     sqrt_t = math.sqrt(t_years)
@@ -605,21 +880,39 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             full_rows, snapshot_buffer=snapshot_buffer, target_minutes=5, top_n=HOT_STRIKES_TOP_N
         )
         spread_scanner = _compute_spread_scanner(by_strike, symbol_price)
-        short_leg_osi = []
-        for row in spread_scanner.get("call_credit_spreads", []):
-            short = _decimal_float(row.get("short_strike"))
-            if short in by_strike:
-                short_leg_osi.append(by_strike[short].get("call_osi"))
-        for row in spread_scanner.get("put_credit_spreads", []):
-            short = _decimal_float(row.get("short_strike"))
-            if short in by_strike:
-                short_leg_osi.append(by_strike[short].get("put_osi"))
+        chain_osi_symbols = []
+        for row in by_strike.values():
+            if row.get("call_osi"):
+                chain_osi_symbols.append(row.get("call_osi"))
+            if row.get("put_osi"):
+                chain_osi_symbols.append(row.get("put_osi"))
         greeks_by_osi = _get_option_greeks_map(
             client,
             now_utc,
             symbol=symbol,
             expiration=expiration,
-            osi_symbols=short_leg_osi,
+            osi_symbols=chain_osi_symbols,
+        )
+        skew_osi_symbols = _select_skew_osi_symbols(
+            by_strike,
+            symbol_price,
+            window_strikes=SKEW_GREEKS_WINDOW_STRIKES,
+        )
+        skew_greeks_by_osi = _get_option_greeks_map(
+            client,
+            now_utc,
+            symbol=symbol,
+            expiration=expiration,
+            osi_symbols=skew_osi_symbols,
+        )
+        skew_analysis = _compute_skew_analysis(
+            by_strike=by_strike,
+            greeks_by_osi=skew_greeks_by_osi,
+            symbol_price=symbol_price,
+            symbol=symbol,
+            expiration=expiration,
+            days_to_expiry=days_to_expiry,
+            requested_osi_symbols=skew_osi_symbols,
         )
         _attach_pop_to_spreads(
             spread_scanner.get("call_credit_spreads", []),
@@ -658,6 +951,7 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             "hot_strikes_call": hot_calls,
             "hot_strikes_put": hot_puts,
             "spread_scanner": spread_scanner,
+            "skew_analysis": skew_analysis,
         }
     finally:
         client.close()
