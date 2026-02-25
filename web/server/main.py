@@ -506,6 +506,19 @@ def _attach_pop_to_spreads(spreads, side: str, by_strike, greeks_by_osi, symbol_
             spread["pop_pct"] = None
         spread["pop_method"] = pop_method
 
+        pop_delta = None
+        pop_delta_method = "unavailable"
+        if delta is not None:
+            pop_delta = max(0.0, min(1.0, 1.0 - abs(delta)))
+            pop_delta_method = "delta_direct"
+        if pop_delta is not None:
+            spread["pop_delta"] = round(pop_delta, 4)
+            spread["pop_delta_pct"] = round(pop_delta * 100.0, 1)
+        else:
+            spread["pop_delta"] = None
+            spread["pop_delta_pct"] = None
+        spread["pop_delta_method"] = pop_delta_method
+
 
 def _resolve_account_id(secret: str, account_id: str | None) -> str:
     """Resolve account id from env, or auto-discover the first account."""

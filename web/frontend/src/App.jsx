@@ -629,13 +629,14 @@ export default function App() {
                   <th>Mark</th>
                   <th>Bid</th>
                   <th>Ask</th>
-                  <th>POP</th>
+                  <th>POP (IV/BE)</th>
+                  <th>POP (Δ)</th>
                   <th>Dist</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredCallCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="6" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="7" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
                 ) : filteredCallCreditSpreads.map((s) => (
                   <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
@@ -643,6 +644,7 @@ export default function App() {
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
                     <td>{formatPct(s.pop_pct)}</td>
+                    <td>{formatPct(s.pop_delta_pct)}</td>
                     <td>{formatPrice(s.distance_from_spx)}</td>
                   </tr>
                 ))}
@@ -658,13 +660,14 @@ export default function App() {
                   <th>Mark</th>
                   <th>Bid</th>
                   <th>Ask</th>
-                  <th>POP</th>
+                  <th>POP (IV/BE)</th>
+                  <th>POP (Δ)</th>
                   <th>Dist</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPutCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="6" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="7" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
                 ) : filteredPutCreditSpreads.map((s) => (
                   <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
@@ -672,6 +675,7 @@ export default function App() {
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
                     <td>{formatPct(s.pop_pct)}</td>
+                    <td>{formatPct(s.pop_delta_pct)}</td>
                     <td>{formatPrice(s.distance_from_spx)}</td>
                   </tr>
                 ))}
