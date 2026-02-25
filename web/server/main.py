@@ -52,8 +52,6 @@ QUOTE_REFRESH_SECONDS = 10
 CHAIN_REFRESH_SECONDS = 60
 SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
 HOT_STRIKES_TOP_N = 8
-SPREAD_WIDTH = 5.0
-SPREAD_MAX_ROWS_PER_SIDE = 15
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 _snapshot_buffers = {}  # (symbol, expiry_mode, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
@@ -345,7 +343,6 @@ def _compute_spread_scanner(by_strike, spx_price):
     if spx_price is None or not by_strike:
         return {"call_credit_spreads": [], "put_credit_spreads": []}
     strikes = sorted(by_strike.keys())
-    strike_set = set(strikes)
 
     def spread_entry(side, short_strike, long_strike):
         short_row = by_strike.get(short_strike, {})
@@ -393,23 +390,28 @@ def _compute_spread_scanner(by_strike, spx_price):
 
     call_spreads = []
     put_spreads = []
-    for short in strikes:
-        call_long = round(short + SPREAD_WIDTH, 4)
-        if short > spx_price and call_long in strike_set:
-            entry = spread_entry("call", short, call_long)
+    for i in range(len(strikes) - 1):
+        lower = strikes[i]
+        higher = strikes[i + 1]
+
+        # Adjacent-ladder call credit: short lower OTM call, long next higher strike.
+        if lower > spx_price:
+            entry = spread_entry("call", lower, higher)
             if entry:
                 call_spreads.append(entry)
-        put_long = round(short - SPREAD_WIDTH, 4)
-        if short < spx_price and put_long in strike_set:
-            entry = spread_entry("put", short, put_long)
+
+        # Adjacent-ladder put credit: short higher OTM put, long next lower strike.
+        if higher < spx_price:
+            entry = spread_entry("put", higher, lower)
             if entry:
                 put_spreads.append(entry)
 
-    call_spreads.sort(key=lambda x: (-x["mark_credit"], -x["distance_from_spx"]))
-    put_spreads.sort(key=lambda x: (-x["mark_credit"], -x["distance_from_spx"]))
+    # "Far OTM" intent: show the farthest spreads first, then richer credits.
+    call_spreads.sort(key=lambda x: (-x["distance_from_spx"], -x["mark_credit"], -x["short_strike"]))
+    put_spreads.sort(key=lambda x: (-x["distance_from_spx"], -x["mark_credit"], -x["short_strike"]))
     return {
-        "call_credit_spreads": call_spreads[:SPREAD_MAX_ROWS_PER_SIDE],
-        "put_credit_spreads": put_spreads[:SPREAD_MAX_ROWS_PER_SIDE],
+        "call_credit_spreads": call_spreads,
+        "put_credit_spreads": put_spreads,
     }
 
 

@@ -511,7 +511,7 @@ export default function App() {
 
       <section className="main-section">
         <div className="section-head">
-          <span className="section-title">Far OTM vertical spreads (5-wide, mark &le; 0.50)</span>
+          <span className="section-title">Far OTM vertical spreads (adjacent strike, mark &le; 0.50)</span>
           <div className="section-controls spread-filters">
             <label>
               Credit min:
