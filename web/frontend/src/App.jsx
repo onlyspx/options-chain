@@ -6,6 +6,7 @@ const AUTO_REFRESH_MS = 10_000
 const QUOTE_LIVE_THRESHOLD_MS = 25_000
 const TOP_VOLUME_N = 5
 const TOP_OI_N = 5
+const SECONDARY_HIGHLIGHT_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX']
 const EXPIRY_OPTIONS = [
@@ -39,6 +40,11 @@ function formatInt(n) {
 function formatSigned(n) {
   if (n == null) return '--'
   return `${n > 0 ? '+' : ''}${formatInt(n)}`
+}
+
+function formatPct(n) {
+  if (n == null) return '--'
+  return `${Number(n).toFixed(1)}%`
 }
 
 function formatExpiryDateShort(isoDate) {
@@ -79,6 +85,9 @@ export default function App() {
   const [showDelta, setShowDelta] = useState(false)
   const [spreadMinCredit, setSpreadMinCredit] = useState(0.25)
   const [spreadMaxCredit, setSpreadMaxCredit] = useState(0.5)
+  const [strikeDepth, setStrikeDepth] = useState(25)
+  const [showBidAsk, setShowBidAsk] = useState(false)
+  const [showDerivedCols, setShowDerivedCols] = useState(false)
 
   const fetchSnapshot = useCallback(async () => {
     setError(null)
@@ -86,6 +95,7 @@ export default function App() {
     query.set('symbol', selectedSymbol)
     query.set('dte', String(selectedDte))
     query.set('expiry_mode', selectedExpiryMode)
+    query.set('strike_depth', String(strikeDepth))
     if (showDelta && markLastMin > 0) {
       query.set('mark_last_min', String(markLastMin))
     }
@@ -104,7 +114,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, selectedDte, selectedExpiryMode, selectedSymbol, showDelta])
+  }, [markLastMin, selectedDte, selectedExpiryMode, selectedSymbol, showDelta, strikeDepth])
 
   useEffect(() => {
     fetchSnapshot()
@@ -174,6 +184,7 @@ export default function App() {
     em_put_mid,
     quote_refresh_seconds,
     chain_refresh_seconds,
+    strike_window_size,
     dte,
     hot_strikes_call = [],
     hot_strikes_put = [],
@@ -184,6 +195,7 @@ export default function App() {
   const activePrice = symbol_price ?? spx_price
   const activeExpiryMode = expiry_mode || selectedExpiryMode
   const activeExpiryLabel = activeExpiryMode === 'friday' ? 'friday weekly' : `dte${dte ?? selectedDte}`
+  const activeStrikeDepth = strike_window_size ?? strikeDepth
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
   const loCredit = Math.min(spreadMinCredit, spreadMaxCredit)
@@ -223,31 +235,38 @@ export default function App() {
         )
       : null
 
-  const highPutVolumeStrikes = new Set(
-    [...strikes]
-      .sort((a, b) => (b.put_vol ?? 0) - (a.put_vol ?? 0))
-      .slice(0, TOP_VOLUME_N)
-      .map((s) => s.strike)
+  const rankedPutVolumeStrikes = [...strikes]
+    .sort((a, b) => (b.put_vol ?? 0) - (a.put_vol ?? 0))
+    .map((s) => s.strike)
+  const highPutVolumeStrikes = new Set(rankedPutVolumeStrikes.slice(0, TOP_VOLUME_N))
+  const midPutVolumeStrikes = new Set(
+    rankedPutVolumeStrikes.slice(TOP_VOLUME_N, TOP_VOLUME_N + SECONDARY_HIGHLIGHT_N)
   )
-  const highCallVolumeStrikes = new Set(
-    [...strikes]
-      .sort((a, b) => (b.call_vol ?? 0) - (a.call_vol ?? 0))
-      .slice(0, TOP_VOLUME_N)
-      .map((s) => s.strike)
+
+  const rankedCallVolumeStrikes = [...strikes]
+    .sort((a, b) => (b.call_vol ?? 0) - (a.call_vol ?? 0))
+    .map((s) => s.strike)
+  const highCallVolumeStrikes = new Set(rankedCallVolumeStrikes.slice(0, TOP_VOLUME_N))
+  const midCallVolumeStrikes = new Set(
+    rankedCallVolumeStrikes.slice(TOP_VOLUME_N, TOP_VOLUME_N + SECONDARY_HIGHLIGHT_N)
   )
-  const highPutOiStrikes = new Set(
-    [...strikes]
-      .filter((s) => s.put_oi != null)
-      .sort((a, b) => Number(b.put_oi ?? 0) - Number(a.put_oi ?? 0))
-      .slice(0, TOP_OI_N)
-      .map((s) => s.strike)
+
+  const rankedPutOiStrikes = [...strikes]
+    .filter((s) => s.put_oi != null)
+    .sort((a, b) => Number(b.put_oi ?? 0) - Number(a.put_oi ?? 0))
+    .map((s) => s.strike)
+  const highPutOiStrikes = new Set(rankedPutOiStrikes.slice(0, TOP_OI_N))
+  const midPutOiStrikes = new Set(
+    rankedPutOiStrikes.slice(TOP_OI_N, TOP_OI_N + SECONDARY_HIGHLIGHT_N)
   )
-  const highCallOiStrikes = new Set(
-    [...strikes]
-      .filter((s) => s.call_oi != null)
-      .sort((a, b) => Number(b.call_oi ?? 0) - Number(a.call_oi ?? 0))
-      .slice(0, TOP_OI_N)
-      .map((s) => s.strike)
+
+  const rankedCallOiStrikes = [...strikes]
+    .filter((s) => s.call_oi != null)
+    .sort((a, b) => Number(b.call_oi ?? 0) - Number(a.call_oi ?? 0))
+    .map((s) => s.strike)
+  const highCallOiStrikes = new Set(rankedCallOiStrikes.slice(0, TOP_OI_N))
+  const midCallOiStrikes = new Set(
+    rankedCallOiStrikes.slice(TOP_OI_N, TOP_OI_N + SECONDARY_HIGHLIGHT_N)
   )
 
   return (
@@ -289,6 +308,27 @@ export default function App() {
               )
             })}
           </div>
+          <div className="section-controls header-controls">
+            <label>
+              Strikes ±
+              <input
+                type="number"
+                min="5"
+                max="100"
+                step="1"
+                value={strikeDepth}
+                onChange={(e) => {
+                  const raw = Number(e.target.value)
+                  if (!Number.isFinite(raw)) {
+                    setStrikeDepth(25)
+                    return
+                  }
+                  const clamped = Math.max(5, Math.min(100, Math.trunc(raw)))
+                  setStrikeDepth(clamped)
+                }}
+              />
+            </label>
+          </div>
           {connectionStatus && (
             <>
               <span className={`status-pill ${connectionStatus}`}>
@@ -310,6 +350,7 @@ export default function App() {
             <span>fri {expirations.friday || '--'}</span>
             <span>quote refresh ~{quote_refresh_seconds || 10}s</span>
             <span>chain refresh ~{chain_refresh_seconds || 60}s</span>
+            <span>strikes ±{activeStrikeDepth}</span>
             {quoteUpdatedAgo != null && <span>quote age {quoteUpdatedAgo}s</span>}
             {chainUpdatedAgo != null && <span>chain age {chainUpdatedAgo}s</span>}
           </span>
@@ -360,14 +401,31 @@ export default function App() {
               />{' '}
               Show delta:
             </label>
-            <label><input type="checkbox" /> Show netto:</label>
+            <label>
+              <input
+                type="checkbox"
+                checked={showBidAsk}
+                onChange={(e) => setShowBidAsk(e.target.checked)}
+              />{' '}
+              Show bid/ask
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={showDerivedCols}
+                onChange={(e) => setShowDerivedCols(e.target.checked)}
+              />{' '}
+              Show netto/Σ/PCR
+            </label>
           </div>
         </div>
 
         <table className="strike-table">
           <thead>
             <tr>
-              <th style={{ textAlign: 'right' }}>Δ put</th>
+              {showDelta && <th style={{ textAlign: 'right' }}>Δ put</th>}
+              {showBidAsk && <th style={{ textAlign: 'right' }}>Put Bid</th>}
+              {showBidAsk && <th style={{ textAlign: 'right' }}>Put Ask</th>}
               <th style={{ textAlign: 'right' }}>OI</th>
               <th style={{ textAlign: 'right' }}>Volume</th>
               <th className="bar-cell" />
@@ -375,10 +433,12 @@ export default function App() {
               <th className="bar-cell" />
               <th style={{ textAlign: 'left' }}>Volume</th>
               <th style={{ textAlign: 'right' }}>OI</th>
-              <th>Δ call</th>
-              <th style={{ textAlign: 'right' }}>netto</th>
-              <th style={{ textAlign: 'right' }}>Σ</th>
-              <th style={{ textAlign: 'right' }}>PCR</th>
+              {showBidAsk && <th style={{ textAlign: 'right' }}>Call Bid</th>}
+              {showBidAsk && <th style={{ textAlign: 'right' }}>Call Ask</th>}
+              {showDelta && <th style={{ textAlign: 'right' }}>Δ call</th>}
+              {showDerivedCols && <th style={{ textAlign: 'right' }}>netto</th>}
+              {showDerivedCols && <th style={{ textAlign: 'right' }}>Σ</th>}
+              {showDerivedCols && <th style={{ textAlign: 'right' }}>PCR</th>}
             </tr>
           </thead>
           <tbody>
@@ -393,57 +453,76 @@ export default function App() {
               const deltaCall = row.delta_call
               const isHighPutVol = highPutVolumeStrikes.has(row.strike)
               const isHighCallVol = highCallVolumeStrikes.has(row.strike)
+              const isMidPutVol = midPutVolumeStrikes.has(row.strike)
+              const isMidCallVol = midCallVolumeStrikes.has(row.strike)
               const isHighPutOi = highPutOiStrikes.has(row.strike)
               const isHighCallOi = highCallOiStrikes.has(row.strike)
+              const isMidPutOi = midPutOiStrikes.has(row.strike)
+              const isMidCallOi = midCallOiStrikes.has(row.strike)
+              const putVolClass = isHighPutVol ? 'high-put-volume' : isMidPutVol ? 'mid-put-volume' : ''
+              const callVolClass = isHighCallVol ? 'high-call-volume' : isMidCallVol ? 'mid-call-volume' : ''
+              const putOiClass = isHighPutOi ? 'high-put-oi' : isMidPutOi ? 'mid-put-oi' : ''
+              const callOiClass = isHighCallOi ? 'high-call-oi' : isMidCallOi ? 'mid-call-oi' : ''
               return (
                 <tr key={row.strike} className={isAtm ? 'atm' : ''}>
-                  <td
-                    style={{ textAlign: 'right' }}
-                    className={
-                      deltaPut != null
-                        ? deltaPut > 0
-                          ? 'netto pos'
-                          : deltaPut < 0
-                            ? 'netto neg'
-                            : ''
-                        : ''
-                    }
-                  >
-                    {deltaPut != null ? (deltaPut > 0 ? '+' : '') + formatInt(deltaPut) : '—'}
-                  </td>
-                  <td className={`put-oi-num ${isHighPutOi ? 'high-put-oi' : ''}`}>{formatInt(row.put_oi)}</td>
-                  <td className={`put-num ${isHighPutVol ? 'high-put-volume' : ''}`}>{formatInt(row.put_vol)}</td>
-                  <td className={`bar-cell ${isHighPutVol ? 'high-put-volume' : ''}`}>
+                  {showDelta && (
+                    <td
+                      style={{ textAlign: 'right' }}
+                      className={
+                        deltaPut != null
+                          ? deltaPut > 0
+                            ? 'netto pos'
+                            : deltaPut < 0
+                              ? 'netto neg'
+                              : ''
+                          : ''
+                      }
+                    >
+                      {deltaPut != null ? (deltaPut > 0 ? '+' : '') + formatInt(deltaPut) : '—'}
+                    </td>
+                  )}
+                  {showBidAsk && <td style={{ textAlign: 'right' }}>{formatPrice(row.put_bid)}</td>}
+                  {showBidAsk && <td style={{ textAlign: 'right' }}>{formatPrice(row.put_ask)}</td>}
+                  <td className={`put-oi-num ${putOiClass}`}>{formatInt(row.put_oi)}</td>
+                  <td className={`put-num ${putVolClass}`}>{formatInt(row.put_vol)}</td>
+                  <td className={`bar-cell ${putVolClass}`}>
                     <div className="bar-wrap put">
                       <div className="bar put" style={{ width: scale(row.put_vol) + 'px' }} />
                     </div>
                   </td>
                   <td className="strike-col">-{row.strike}-</td>
-                  <td className={`bar-cell ${isHighCallVol ? 'high-call-volume' : ''}`}>
+                  <td className={`bar-cell ${callVolClass}`}>
                     <div className="bar-wrap call">
                       <div className="bar call" style={{ width: scale(row.call_vol) + 'px' }} />
                     </div>
                   </td>
-                  <td className={`call-num ${isHighCallVol ? 'high-call-volume' : ''}`}>{formatInt(row.call_vol)}</td>
-                  <td className={`call-oi-num ${isHighCallOi ? 'high-call-oi' : ''}`}>{formatInt(row.call_oi)}</td>
-                  <td
-                    className={
-                      deltaCall != null
-                        ? deltaCall > 0
-                          ? 'netto pos'
-                          : deltaCall < 0
-                            ? 'netto neg'
-                            : ''
-                        : ''
-                    }
-                  >
-                    {deltaCall != null ? (deltaCall > 0 ? '+' : '') + formatInt(deltaCall) : '—'}
-                  </td>
-                  <td className={`netto ${netto < 0 ? 'neg' : netto > 0 ? 'pos' : ''}`}>
-                    {netto > 0 ? '+' : ''}{formatInt(netto)}
-                  </td>
-                  <td className="sum-col">{formatInt(sum)}</td>
-                  <td style={{ textAlign: 'right' }}>{pcr}</td>
+                  <td className={`call-num ${callVolClass}`}>{formatInt(row.call_vol)}</td>
+                  <td className={`call-oi-num ${callOiClass}`}>{formatInt(row.call_oi)}</td>
+                  {showBidAsk && <td style={{ textAlign: 'right' }}>{formatPrice(row.call_bid)}</td>}
+                  {showBidAsk && <td style={{ textAlign: 'right' }}>{formatPrice(row.call_ask)}</td>}
+                  {showDelta && (
+                    <td
+                      style={{ textAlign: 'right' }}
+                      className={
+                        deltaCall != null
+                          ? deltaCall > 0
+                            ? 'netto pos'
+                            : deltaCall < 0
+                              ? 'netto neg'
+                              : ''
+                          : ''
+                      }
+                    >
+                      {deltaCall != null ? (deltaCall > 0 ? '+' : '') + formatInt(deltaCall) : '—'}
+                    </td>
+                  )}
+                  {showDerivedCols && (
+                    <td className={`netto ${netto < 0 ? 'neg' : netto > 0 ? 'pos' : ''}`}>
+                      {netto > 0 ? '+' : ''}{formatInt(netto)}
+                    </td>
+                  )}
+                  {showDerivedCols && <td className="sum-col">{formatInt(sum)}</td>}
+                  {showDerivedCols && <td style={{ textAlign: 'right' }}>{pcr}</td>}
                 </tr>
               )
             })}
@@ -550,18 +629,20 @@ export default function App() {
                   <th>Mark</th>
                   <th>Bid</th>
                   <th>Ask</th>
+                  <th>POP</th>
                   <th>Dist</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredCallCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="5" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="6" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
                 ) : filteredCallCreditSpreads.map((s) => (
                   <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
+                    <td>{formatPct(s.pop_pct)}</td>
                     <td>{formatPrice(s.distance_from_spx)}</td>
                   </tr>
                 ))}
@@ -577,18 +658,20 @@ export default function App() {
                   <th>Mark</th>
                   <th>Bid</th>
                   <th>Ask</th>
+                  <th>POP</th>
                   <th>Dist</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPutCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="5" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="6" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
                 ) : filteredPutCreditSpreads.map((s) => (
                   <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
+                    <td>{formatPct(s.pop_pct)}</td>
                     <td>{formatPrice(s.distance_from_spx)}</td>
                   </tr>
                 ))}

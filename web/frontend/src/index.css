@@ -57,6 +57,16 @@ body {
 .section-controls { font-size: 10px; color: #666; display: flex; gap: 6px; align-items: center; }
 .section-controls label { display: inline-flex; align-items: center; gap: 2px; cursor: pointer; }
 .section-controls select { padding: 1px 4px; font-size: 10px; background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; }
+.header-controls input {
+  width: 62px;
+  margin-left: 4px;
+  padding: 1px 4px;
+  font-size: 10px;
+  background: #2a2a2a;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 4px;
+}
 .spread-filters {
   gap: 8px;
 }
@@ -94,19 +104,39 @@ body {
 .strike-table td.put-num.high-put-volume {
   border-left: 2px solid #ea580c;
 }
+.strike-table td.mid-put-volume {
+  background: rgba(234, 88, 12, 0.1);
+}
+.strike-table td.put-num.mid-put-volume {
+  border-left: 2px solid #fb923c;
+}
 .strike-table td.high-call-volume {
   background: rgba(37, 99, 235, 0.18);
 }
 .strike-table td.call-num.high-call-volume {
   border-right: 2px solid #2563eb;
 }
+.strike-table td.mid-call-volume {
+  background: rgba(37, 99, 235, 0.1);
+}
+.strike-table td.call-num.mid-call-volume {
+  border-right: 2px solid #60a5fa;
+}
 .strike-table td.high-put-oi {
   background: rgba(234, 88, 12, 0.14);
   border-left: 2px solid #f97316;
 }
+.strike-table td.mid-put-oi {
+  background: rgba(234, 88, 12, 0.08);
+  border-left: 2px solid #fdba74;
+}
 .strike-table td.high-call-oi {
   background: rgba(37, 99, 235, 0.14);
   border-right: 2px solid #3b82f6;
+}
+.strike-table td.mid-call-oi {
+  background: rgba(37, 99, 235, 0.08);
+  border-right: 2px solid #93c5fd;
 }
 .netto { text-align: right; }
 .netto.neg { color: #f87171; }

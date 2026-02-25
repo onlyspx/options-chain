@@ -5,6 +5,7 @@ Run from repo root: uvicorn web.server.main:app --reload
 """
 import os
 import sys
+import math
 from collections import deque
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -45,9 +46,8 @@ SUPPORTED_SYMBOLS = {
     "SPY": "EQUITY",
     "QQQ": "EQUITY",
 }
-DEFAULT_ATM_STRIKES = 15  # fallback ATM ± N strikes
-MID_DTE_ATM_STRIKES = 25  # for 2-4 days to expiry
-LONG_DTE_ATM_STRIKES = 35  # for 5+ days to expiry
+DEFAULT_STRIKE_DEPTH = 25  # default ATM ± N strikes shown in the main table
+MAX_STRIKE_DEPTH = 100
 QUOTE_REFRESH_SECONDS = 10
 CHAIN_REFRESH_SECONDS = 60
 SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
@@ -57,6 +57,7 @@ SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 _snapshot_buffers = {}  # (symbol, expiry_mode, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
 _quote_cache_by_symbol = {}  # symbol -> {fetched_at, symbol_price, timestamp}
 _chain_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_strike, timestamp}
+_greeks_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_osi, timestamp}
 
 
 def _norm_exp(exp):
@@ -127,6 +128,10 @@ def _mid(bid, ask):
     return round((b + a) / 2, 4)
 
 
+def _normal_cdf(z: float):
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
 def _now_utc():
     return datetime.utcnow()
 
@@ -164,12 +169,15 @@ def _build_by_strike(calls, puts):
                 "call_ask": None,
                 "put_bid": None,
                 "put_ask": None,
+                "call_osi": None,
+                "put_osi": None,
             },
         )
         by_strike[strike]["call_oi"] = getattr(opt, "open_interest", None)
         by_strike[strike]["call_vol"] = getattr(opt, "volume", None)
         by_strike[strike]["call_bid"] = _decimal_float(getattr(opt, "bid", None))
         by_strike[strike]["call_ask"] = _decimal_float(getattr(opt, "ask", None))
+        by_strike[strike]["call_osi"] = osi
 
     for opt in puts:
         osi = opt.instrument.symbol if hasattr(opt, "instrument") else ""
@@ -188,12 +196,15 @@ def _build_by_strike(calls, puts):
                 "call_ask": None,
                 "put_bid": None,
                 "put_ask": None,
+                "call_osi": None,
+                "put_osi": None,
             },
         )
         by_strike[strike]["put_oi"] = getattr(opt, "open_interest", None)
         by_strike[strike]["put_vol"] = getattr(opt, "volume", None)
         by_strike[strike]["put_bid"] = _decimal_float(getattr(opt, "bid", None))
         by_strike[strike]["put_ask"] = _decimal_float(getattr(opt, "ask", None))
+        by_strike[strike]["put_osi"] = osi
 
     return by_strike
 
@@ -206,17 +217,19 @@ def _days_to_expiry(expiration: str):
     return max(0, (exp_date - date.today()).days)
 
 
-def _strike_window_size(days_to_expiry: int | None):
-    if days_to_expiry is None:
-        return DEFAULT_ATM_STRIKES
-    if days_to_expiry <= 1:
-        return DEFAULT_ATM_STRIKES
-    if days_to_expiry <= 4:
-        return MID_DTE_ATM_STRIKES
-    return LONG_DTE_ATM_STRIKES
+def _resolve_strike_depth(strike_depth):
+    if strike_depth is None:
+        return DEFAULT_STRIKE_DEPTH
+    try:
+        value = int(str(strike_depth).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_STRIKE_DEPTH
+    if value <= 0:
+        return DEFAULT_STRIKE_DEPTH
+    return min(value, MAX_STRIKE_DEPTH)
 
 
-def _windowed_strikes(by_strike, spx_price, atm_strikes: int = DEFAULT_ATM_STRIKES):
+def _windowed_strikes(by_strike, spx_price, atm_strikes: int = DEFAULT_STRIKE_DEPTH):
     strikes_list = sorted(by_strike.keys(), reverse=True)
     if spx_price is None or not strikes_list:
         return [by_strike[s] for s in strikes_list]
@@ -415,6 +428,85 @@ def _compute_spread_scanner(by_strike, spx_price):
     }
 
 
+def _get_option_greeks_map(client, now_utc: datetime, symbol: str, expiration: str, osi_symbols: list[str]):
+    symbols = sorted({s for s in osi_symbols if s})
+    if not symbols:
+        return {}
+    cache_key = (symbol, expiration)
+    cache_entry = _greeks_cache_by_symbol_exp.get(cache_key)
+    if cache_entry:
+        fetched_at = cache_entry.get("fetched_at")
+        by_osi = cache_entry.get("by_osi") or {}
+        if (
+            fetched_at is not None
+            and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS
+            and all(sym in by_osi for sym in symbols)
+        ):
+            return {sym: by_osi.get(sym, {}) for sym in symbols}
+    try:
+        response = client.get_option_greeks(osi_symbols=symbols)
+    except Exception:
+        if cache_entry and cache_entry.get("by_osi"):
+            return {sym: cache_entry["by_osi"].get(sym, {}) for sym in symbols}
+        return {}
+    by_osi = {}
+    if cache_entry and cache_entry.get("by_osi"):
+        by_osi.update(cache_entry["by_osi"])
+    for greek_data in getattr(response, "greeks", []) or []:
+        osi = getattr(greek_data, "osi_symbol", None) or getattr(greek_data, "symbol", None)
+        if not osi:
+            continue
+        greeks_obj = getattr(greek_data, "greeks", None)
+        if greeks_obj is None:
+            by_osi[osi] = {"delta": None, "implied_volatility": None}
+            continue
+        by_osi[osi] = {
+            "delta": _decimal_float(getattr(greeks_obj, "delta", None)),
+            "implied_volatility": _decimal_float(getattr(greeks_obj, "implied_volatility", None)),
+        }
+    _greeks_cache_by_symbol_exp[cache_key] = {
+        "fetched_at": now_utc,
+        "by_osi": by_osi,
+        "timestamp": _iso_utc(now_utc),
+    }
+    return {sym: by_osi.get(sym, {}) for sym in symbols}
+
+
+def _attach_pop_to_spreads(spreads, side: str, by_strike, greeks_by_osi, symbol_price, days_to_expiry):
+    t_years = max(days_to_expiry or 0, 1) / 365.0
+    sqrt_t = math.sqrt(t_years)
+    s0 = _decimal_float(symbol_price)
+    for spread in spreads:
+        short_strike = _decimal_float(spread.get("short_strike"))
+        credit = _decimal_float(spread.get("mark_credit"))
+        short_row = by_strike.get(short_strike, {})
+        short_osi = short_row.get("call_osi") if side == "call" else short_row.get("put_osi")
+        greek = greeks_by_osi.get(short_osi, {}) if short_osi else {}
+        delta = _decimal_float(greek.get("delta"))
+        iv = _decimal_float(greek.get("implied_volatility"))
+
+        pop = None
+        pop_method = "unavailable"
+        if short_strike is not None and credit is not None:
+            breakeven = short_strike + credit if side == "call" else short_strike - credit
+            if iv is not None and iv > 0 and s0 is not None and s0 > 0 and breakeven > 0 and sqrt_t > 0:
+                z = (math.log(breakeven / s0) + 0.5 * (iv ** 2) * t_years) / (iv * sqrt_t)
+                phi = _normal_cdf(z)
+                pop = phi if side == "call" else 1.0 - phi
+                pop_method = "breakeven_iv"
+            elif delta is not None:
+                pop = 1.0 - abs(delta)
+                pop_method = "delta_fallback"
+        if pop is not None:
+            pop = max(0.0, min(1.0, pop))
+            spread["pop"] = round(pop, 4)
+            spread["pop_pct"] = round(pop * 100.0, 1)
+        else:
+            spread["pop"] = None
+            spread["pop_pct"] = None
+        spread["pop_method"] = pop_method
+
+
 def _resolve_account_id(secret: str, account_id: str | None) -> str:
     """Resolve account id from env, or auto-discover the first account."""
     if account_id:
@@ -437,7 +529,7 @@ def _resolve_account_id(secret: str, account_id: str | None) -> str:
         discover_client.close()
 
 
-def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str = "dte"):
+def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str = "dte", strike_depth=None):
     if dte not in SUPPORTED_DTES:
         raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
     expiry_mode = expiry_mode.lower()
@@ -484,7 +576,7 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             expiration=expiration,
         )
         days_to_expiry = _days_to_expiry(expiration)
-        strike_window_size = _strike_window_size(days_to_expiry)
+        strike_window_size = _resolve_strike_depth(strike_depth)
         strikes = _windowed_strikes(by_strike, symbol_price, atm_strikes=strike_window_size)
         ts_iso = _iso_utc(now_utc)
 
@@ -500,6 +592,38 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             full_rows, snapshot_buffer=snapshot_buffer, target_minutes=5, top_n=HOT_STRIKES_TOP_N
         )
         spread_scanner = _compute_spread_scanner(by_strike, symbol_price)
+        short_leg_osi = []
+        for row in spread_scanner.get("call_credit_spreads", []):
+            short = _decimal_float(row.get("short_strike"))
+            if short in by_strike:
+                short_leg_osi.append(by_strike[short].get("call_osi"))
+        for row in spread_scanner.get("put_credit_spreads", []):
+            short = _decimal_float(row.get("short_strike"))
+            if short in by_strike:
+                short_leg_osi.append(by_strike[short].get("put_osi"))
+        greeks_by_osi = _get_option_greeks_map(
+            client,
+            now_utc,
+            symbol=symbol,
+            expiration=expiration,
+            osi_symbols=short_leg_osi,
+        )
+        _attach_pop_to_spreads(
+            spread_scanner.get("call_credit_spreads", []),
+            side="call",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+            symbol_price=symbol_price,
+            days_to_expiry=days_to_expiry,
+        )
+        _attach_pop_to_spreads(
+            spread_scanner.get("put_credit_spreads", []),
+            side="put",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+            symbol_price=symbol_price,
+            days_to_expiry=days_to_expiry,
+        )
 
         return {
             "symbol": symbol,
@@ -527,8 +651,14 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
 
 
 @app.get("/api/snapshot")
-def get_snapshot(mark_last_min: int | None = None, dte: int = 0, symbol: str = DEFAULT_SYMBOL, expiry_mode: str = "dte"):
-    result = _fetch_snapshot(symbol=symbol, dte=dte, expiry_mode=expiry_mode)
+def get_snapshot(
+    mark_last_min: int | None = None,
+    dte: int = 0,
+    symbol: str = DEFAULT_SYMBOL,
+    expiry_mode: str = "dte",
+    strike_depth: str | None = None,
+):
+    result = _fetch_snapshot(symbol=symbol, dte=dte, expiry_mode=expiry_mode, strike_depth=strike_depth)
     snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiry_mode"], dte), deque(maxlen=512))
     if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()

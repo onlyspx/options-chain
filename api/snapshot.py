@@ -18,6 +18,13 @@ def snapshot(
     dte: int = 0,
     symbol: str = "SPX",
     expiry_mode: str = "dte",
+    strike_depth: str | None = None,
 ):
     """Return snapshot with optional symbol/expiry mode and mark-last delta window."""
-    return get_snapshot(mark_last_min=mark_last_min, dte=dte, symbol=symbol, expiry_mode=expiry_mode)
+    return get_snapshot(
+        mark_last_min=mark_last_min,
+        dte=dte,
+        symbol=symbol,
+        expiry_mode=expiry_mode,
+        strike_depth=strike_depth,
+    )
