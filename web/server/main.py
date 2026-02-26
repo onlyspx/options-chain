@@ -817,7 +817,13 @@ def _resolve_account_id(secret: str, account_id: str | None) -> str:
         discover_client.close()
 
 
-def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str = "dte", strike_depth=None):
+def _fetch_snapshot(
+    symbol: str = DEFAULT_SYMBOL,
+    dte: int = 0,
+    expiry_mode: str = "dte",
+    strike_depth=None,
+    include_skew: bool = False,
+):
     if dte not in SUPPORTED_DTES:
         raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
     expiry_mode = expiry_mode.lower()
@@ -893,27 +899,29 @@ def _fetch_snapshot(symbol: str = DEFAULT_SYMBOL, dte: int = 0, expiry_mode: str
             expiration=expiration,
             osi_symbols=chain_osi_symbols,
         )
-        skew_osi_symbols = _select_skew_osi_symbols(
-            by_strike,
-            symbol_price,
-            window_strikes=SKEW_GREEKS_WINDOW_STRIKES,
-        )
-        skew_greeks_by_osi = _get_option_greeks_map(
-            client,
-            now_utc,
-            symbol=symbol,
-            expiration=expiration,
-            osi_symbols=skew_osi_symbols,
-        )
-        skew_analysis = _compute_skew_analysis(
-            by_strike=by_strike,
-            greeks_by_osi=skew_greeks_by_osi,
-            symbol_price=symbol_price,
-            symbol=symbol,
-            expiration=expiration,
-            days_to_expiry=days_to_expiry,
-            requested_osi_symbols=skew_osi_symbols,
-        )
+        skew_analysis = None
+        if include_skew:
+            skew_osi_symbols = _select_skew_osi_symbols(
+                by_strike,
+                symbol_price,
+                window_strikes=SKEW_GREEKS_WINDOW_STRIKES,
+            )
+            skew_greeks_by_osi = _get_option_greeks_map(
+                client,
+                now_utc,
+                symbol=symbol,
+                expiration=expiration,
+                osi_symbols=skew_osi_symbols,
+            )
+            skew_analysis = _compute_skew_analysis(
+                by_strike=by_strike,
+                greeks_by_osi=skew_greeks_by_osi,
+                symbol_price=symbol_price,
+                symbol=symbol,
+                expiration=expiration,
+                days_to_expiry=days_to_expiry,
+                requested_osi_symbols=skew_osi_symbols,
+            )
         _attach_pop_to_spreads(
             spread_scanner.get("call_credit_spreads", []),
             side="call",
@@ -964,8 +972,15 @@ def get_snapshot(
     symbol: str = DEFAULT_SYMBOL,
     expiry_mode: str = "dte",
     strike_depth: str | None = None,
+    include_skew: bool = False,
 ):
-    result = _fetch_snapshot(symbol=symbol, dte=dte, expiry_mode=expiry_mode, strike_depth=strike_depth)
+    result = _fetch_snapshot(
+        symbol=symbol,
+        dte=dte,
+        expiry_mode=expiry_mode,
+        strike_depth=strike_depth,
+        include_skew=include_skew,
+    )
     snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiry_mode"], dte), deque(maxlen=512))
     if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()
