@@ -8,12 +8,14 @@ const TOP_VOLUME_N = 5
 const TOP_OI_N = 5
 const SECONDARY_HIGHLIGHT_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
-const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX']
+const THEME_STORAGE_KEY = 'dashboardTheme'
+const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX', 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN', 'IBIT', 'AVGO']
 const EXPIRY_OPTIONS = [
-  { key: 'dte-0', label: '0dte', mode: 'dte', dte: 0, expKey: 'dte0' },
-  { key: 'dte-1', label: '1dte', mode: 'dte', dte: 1, expKey: 'dte1' },
-  { key: 'friday', label: 'Fri weekly', mode: 'friday', dte: 1, expKey: 'friday' },
+  { key: 'slot-0dte', label: '0dte', slot: '0dte', expKey: 'slot_0dte' },
+  { key: 'slot-next1', label: 'next1', slot: 'next1', expKey: 'slot_next1' },
+  { key: 'slot-next2', label: 'next2', slot: 'next2', expKey: 'slot_next2' },
 ]
+const EXPIRY_SLOT_LABELS = { '0dte': '0dte', 'next1': 'next1', 'next2': 'next2' }
 
 function formatTimestamp(iso) {
   if (!iso) return '--'
@@ -101,11 +103,17 @@ function buildDocumentTitle(symbol, price, loading, error) {
   return `${safeSymbol} ${formatPrice(price)}`
 }
 
+function getInitialTheme() {
+  if (typeof window === 'undefined') return 'dark'
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY)
+  return saved === 'light' || saved === 'dark' ? saved : 'dark'
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
-  const [selectedDte, setSelectedDte] = useState(0)
-  const [selectedExpiryMode, setSelectedExpiryMode] = useState('dte')
+  const [selectedExpirySlot, setSelectedExpirySlot] = useState('0dte')
+  const [theme, setTheme] = useState(getInitialTheme)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [lastSuccessAt, setLastSuccessAt] = useState(null)
@@ -123,8 +131,7 @@ export default function App() {
     setError(null)
     const query = new URLSearchParams()
     query.set('symbol', selectedSymbol)
-    query.set('dte', String(selectedDte))
-    query.set('expiry_mode', selectedExpiryMode)
+    query.set('expiry_slot', selectedExpirySlot)
     query.set('strike_depth', String(strikeDepth))
     if (showDelta && markLastMin > 0) {
       query.set('mark_last_min', String(markLastMin))
@@ -147,7 +154,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, selectedDte, selectedExpiryMode, selectedSymbol, showDelta, showSkew, strikeDepth])
+  }, [markLastMin, selectedExpirySlot, selectedSymbol, showDelta, showSkew, strikeDepth])
 
   useEffect(() => {
     fetchSnapshot()
@@ -173,12 +180,20 @@ export default function App() {
     document.title = buildDocumentTitle(titleSymbol, titlePrice, loading, error)
   }, [titleSymbol, titlePrice, loading, error])
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.theme = theme
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    }
+  }, [theme])
+
   if (loading && !snapshot) {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">Options Dashboard</span>
-          <span className="meta">{selectedSymbol} {selectedExpiryMode === 'friday' ? 'friday' : `dte${selectedDte}`}</span>
+          <span className="title">Multi-Symbol 0DTE Dashboard</span>
+          <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
           <span className="meta">Loading…</span>
         </div>
       </div>
@@ -189,8 +204,8 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">Options Dashboard</span>
-          <span className="meta">{selectedSymbol} {selectedExpiryMode === 'friday' ? 'friday' : `dte${selectedDte}`}</span>
+          <span className="title">Multi-Symbol 0DTE Dashboard</span>
+          <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>Refresh</button>
@@ -204,7 +219,9 @@ export default function App() {
     symbol_price,
     expiration,
     expirations = {},
-    expiry_mode,
+    days_to_expiry,
+    expiry_slot_requested,
+    expiry_slot_resolved,
     spx_price,
     timestamp,
     quote_timestamp,
@@ -218,7 +235,6 @@ export default function App() {
     quote_refresh_seconds,
     chain_refresh_seconds,
     strike_window_size,
-    dte,
     hot_strikes_call = [],
     hot_strikes_put = [],
     spread_scanner = {},
@@ -227,8 +243,10 @@ export default function App() {
   } = snapshot || {}
   const activeSymbol = symbol || selectedSymbol
   const activePrice = symbol_price ?? spx_price
-  const activeExpiryMode = expiry_mode || selectedExpiryMode
-  const activeExpiryLabel = activeExpiryMode === 'friday' ? 'friday weekly' : `dte${dte ?? selectedDte}`
+  const requestedExpirySlot = expiry_slot_requested || selectedExpirySlot
+  const resolvedExpirySlot = expiry_slot_resolved || requestedExpirySlot
+  const activeExpiryLabel = EXPIRY_SLOT_LABELS[resolvedExpirySlot] || resolvedExpirySlot || '--'
+  const hasExpiryFallback = requestedExpirySlot !== resolvedExpirySlot
   const activeStrikeDepth = strike_window_size ?? strikeDepth
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
@@ -322,7 +340,7 @@ export default function App() {
     <>
       <header className="header">
         <div className="header-row">
-          <span className="title">Options Dashboard</span>
+          <span className="title">Multi-Symbol 0DTE Dashboard</span>
           <div className="symbol-picker">
             {SYMBOL_OPTIONS.map((sym) => (
               <button
@@ -338,18 +356,18 @@ export default function App() {
           </div>
           <div className="symbol-dte-grid">
             {EXPIRY_OPTIONS.map((opt) => {
-              const isActive = selectedExpiryMode === opt.mode && selectedDte === opt.dte
+              const isActive = resolvedExpirySlot === opt.slot
+              const isRequested = requestedExpirySlot === opt.slot && requestedExpirySlot !== resolvedExpirySlot
               const expDate = expirations[opt.expKey]
+              const isAvailable = Boolean(expDate)
               return (
                 <button
                   key={opt.key}
                   type="button"
-                  className={`dte-btn expiry-btn ${isActive ? 'is-active' : ''}`}
-                  onClick={() => {
-                    setSelectedExpiryMode(opt.mode)
-                    setSelectedDte(opt.dte)
-                  }}
-                  disabled={isActive}
+                  className={`dte-btn expiry-btn ${isActive ? 'is-active' : ''} ${isRequested ? 'is-requested' : ''}`}
+                  onClick={() => setSelectedExpirySlot(opt.slot)}
+                  disabled={isActive || !isAvailable}
+                  title={!isAvailable ? `${opt.label} unavailable` : ''}
                 >
                   <span>{opt.label}</span>
                   <span className="expiry-date">{formatExpiryDateShort(expDate)}</span>
@@ -385,6 +403,15 @@ export default function App() {
               />
               <span>Show skew</span>
             </label>
+            <button
+              type="button"
+              className="theme-toggle"
+              aria-pressed={theme === 'dark'}
+              onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+              title="Toggle theme"
+            >
+              Theme: {theme === 'dark' ? 'Dark' : 'Light'}
+            </button>
           </div>
           {connectionStatus && (
             <>
@@ -402,15 +429,18 @@ export default function App() {
           <span className="meta">Chain ts: {formatTimestamp(chain_timestamp || timestamp)}</span>
           <span className="metrics">
             <span>{activeExpiryLabel} / exp {expiration || '--'}</span>
-            <span>0dte {expirations.dte0 || '--'}</span>
-            <span>1dte {expirations.dte1 || '--'}</span>
-            <span>fri {expirations.friday || '--'}</span>
+            <span>0dte {expirations.slot_0dte || '--'}</span>
+            <span>next1 {expirations.slot_next1 || '--'}</span>
+            <span>next2 {expirations.slot_next2 || '--'}</span>
             <span>quote refresh ~{quote_refresh_seconds || 10}s</span>
             <span>chain refresh ~{chain_refresh_seconds || 60}s</span>
             <span>strikes ±{activeStrikeDepth}</span>
             {quoteUpdatedAgo != null && <span>quote age {quoteUpdatedAgo}s</span>}
             {chainUpdatedAgo != null && <span>chain age {chainUpdatedAgo}s</span>}
           </span>
+          {hasExpiryFallback && (
+            <span className="meta expiry-fallback">Requested {requestedExpirySlot} {'->'} showing {resolvedExpirySlot}</span>
+          )}
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>
             Refresh
           </button>
@@ -731,7 +761,7 @@ export default function App() {
               <div className="sub-title">Diagnostics</div>
               <div className="skew-diagnostics">
                 <div>symbol {skew_analysis?.symbol || activeSymbol} / exp {skew_analysis?.expiration || expiration || '--'} / spot {formatPrice(skew_analysis?.spot ?? activePrice)}</div>
-                <div>dte {skew_analysis?.days_to_expiry ?? dte ?? '--'} / coverage {formatPct(skewDiagnostics.greeks_coverage_pct)}</div>
+                <div>dte {skew_analysis?.days_to_expiry ?? days_to_expiry ?? '--'} / coverage {formatPct(skewDiagnostics.greeks_coverage_pct)}</div>
                 <div>available {Array.isArray(skewDiagnostics.available_nodes) && skewDiagnostics.available_nodes.length ? skewDiagnostics.available_nodes.join(', ') : '--'}</div>
                 <div>missing {Array.isArray(skewDiagnostics.missing_nodes) && skewDiagnostics.missing_nodes.length ? skewDiagnostics.missing_nodes.join(', ') : '--'}</div>
                 <div className="skew-warning">

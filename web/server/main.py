@@ -1,5 +1,5 @@
 """
-FastAPI server for SPX 0DTE dashboard.
+FastAPI server for the multi-symbol 0DTE dashboard.
 Serves GET /api/snapshot (chain + quote) and static frontend from ../frontend/dist.
 Run from repo root: uvicorn web.server.main:app --reload
 """
@@ -37,7 +37,7 @@ try:
 except ImportError:
     PublicApiClient = None
 
-app = FastAPI(title="SPX 0DTE Dashboard API")
+app = FastAPI(title="Multi-Symbol 0DTE Dashboard API")
 
 DEFAULT_SYMBOL = "SPX"
 SUPPORTED_SYMBOLS = {
@@ -45,6 +45,15 @@ SUPPORTED_SYMBOLS = {
     "NDX": "INDEX",
     "SPY": "EQUITY",
     "QQQ": "EQUITY",
+    "NVDA": "EQUITY",
+    "TSLA": "EQUITY",
+    "AAPL": "EQUITY",
+    "MSFT": "EQUITY",
+    "GOOGL": "EQUITY",
+    "META": "EQUITY",
+    "AMZN": "EQUITY",
+    "IBIT": "EQUITY",
+    "AVGO": "EQUITY",
 }
 DEFAULT_STRIKE_DEPTH = 25  # default ATM ± N strikes shown in the main table
 MAX_STRIKE_DEPTH = 100
@@ -56,7 +65,8 @@ SKEW_GREEKS_WINDOW_STRIKES = 30
 SKEW_MIN_COVERAGE_WARN_PCT = 60.0
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
-_snapshot_buffers = {}  # (symbol, expiry_mode, dte) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
+SUPPORTED_EXPIRY_SLOTS = {"0dte", "next1", "next2"}
+_snapshot_buffers = {}  # (symbol, expiration) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
 _quote_cache_by_symbol = {}  # symbol -> {fetched_at, symbol_price, timestamp}
 _chain_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_strike, timestamp}
 _greeks_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_osi, timestamp}
@@ -68,22 +78,35 @@ def _norm_exp(exp):
     return str(exp)
 
 
-def _resolve_expiration_targets(client, symbol: str, instrument_type):
-    """Resolve key expirations used by the UI: 0dte, 1dte, and Friday weekly."""
-    expirations = get_option_expirations(client, symbol, instrument_type=instrument_type)
-    if not expirations:
-        return None
-    parsed = []
-    for exp in expirations:
-        exp_str = _norm_exp(exp)
-        try:
-            parsed.append(date.fromisoformat(exp_str))
-        except ValueError:
-            continue
-    if not parsed:
-        return None
-    normalized_dates = sorted(set(parsed))
-    today = date.today()
+def _iso_or_none(exp_date):
+    return exp_date.isoformat() if exp_date else None
+
+
+def _allow_same_day_0dte(symbol: str, today: date) -> bool:
+    if symbol == "SPX":
+        return today.weekday() <= 4
+    return today.weekday() in {0, 2, 4}
+
+
+def _build_expiry_slots(normalized_dates: list[date], today: date, symbol: str):
+    """Build slot-based expirations used by the new dashboard UI."""
+    date_set = set(normalized_dates)
+    slot_0dte = today if today in date_set and _allow_same_day_0dte(symbol, today) else None
+    future_dates = [exp for exp in normalized_dates if exp > today]
+    slot_next1 = future_dates[0] if len(future_dates) > 0 else None
+    slot_next2 = future_dates[1] if len(future_dates) > 1 else None
+    return {
+        "slot_0dte": _iso_or_none(slot_0dte),
+        "slot_next1": _iso_or_none(slot_next1),
+        "slot_next2": _iso_or_none(slot_next2),
+    }
+
+
+def _build_legacy_expiration_targets(normalized_dates: list[date], today: date):
+    """Keep legacy expiry fields for backward compatibility."""
+    if not normalized_dates:
+        return {"dte0": None, "dte1": None, "friday": None}
+
     dte0 = next((exp for exp in normalized_dates if exp >= today), normalized_dates[-1])
     dte1 = next((exp for exp in normalized_dates if exp > today), normalized_dates[-1])
     include_today_for_friday = today.weekday() != 4
@@ -106,10 +129,69 @@ def _resolve_expiration_targets(client, symbol: str, instrument_type):
     }
 
 
-def _pick_expiration(exp_targets: dict[str, str], expiry_mode: str, dte: int):
+def _resolve_requested_expiry_slot(expiry_slot: str | None, expiry_mode: str, dte: int):
+    if expiry_slot is not None:
+        slot = str(expiry_slot).strip().lower()
+        if slot not in SUPPORTED_EXPIRY_SLOTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported expiry_slot={expiry_slot}; expected one of {sorted(SUPPORTED_EXPIRY_SLOTS)}",
+            )
+        return slot
     if expiry_mode == "friday":
-        return exp_targets["friday"]
-    return exp_targets["dte1"] if dte == 1 else exp_targets["dte0"]
+        return "next2"
+    return "next1" if dte == 1 else "0dte"
+
+
+def _resolve_expiration_for_slot(exp_targets: dict[str, str | None], requested_slot: str):
+    if requested_slot == "0dte":
+        slot_candidates = ("0dte", "next1", "next2")
+    elif requested_slot == "next1":
+        slot_candidates = ("next1", "next2")
+    else:
+        slot_candidates = ("next2", "next1")
+
+    for slot in slot_candidates:
+        expiration = exp_targets.get(f"slot_{slot}")
+        if expiration:
+            return slot, expiration
+    return None, None
+
+
+def _match_slot_for_expiration(exp_targets: dict[str, str | None], expiration: str | None):
+    if not expiration:
+        return None
+    for slot in ("0dte", "next1", "next2"):
+        if exp_targets.get(f"slot_{slot}") == expiration:
+            return slot
+    return None
+
+
+def _resolve_expiration_targets(client, symbol: str, instrument_type):
+    """Resolve both slot-based and legacy expiration targets used by the UI."""
+    expirations = get_option_expirations(client, symbol, instrument_type=instrument_type)
+    if not expirations:
+        return None
+    parsed = []
+    for exp in expirations:
+        exp_str = _norm_exp(exp)
+        try:
+            parsed.append(date.fromisoformat(exp_str))
+        except ValueError:
+            continue
+    if not parsed:
+        return None
+    normalized_dates = sorted(set(parsed))
+    today = date.today()
+    slot_targets = _build_expiry_slots(normalized_dates, today=today, symbol=symbol)
+    legacy_targets = _build_legacy_expiration_targets(normalized_dates, today=today)
+    return {**legacy_targets, **slot_targets}
+
+
+def _pick_expiration(exp_targets: dict[str, str | None], expiry_mode: str, dte: int):
+    if expiry_mode == "friday":
+        return exp_targets.get("friday")
+    return exp_targets.get("dte1") if dte == 1 else exp_targets.get("dte0")
 
 
 def _decimal_float(v):
@@ -821,17 +903,21 @@ def _fetch_snapshot(
     symbol: str = DEFAULT_SYMBOL,
     dte: int = 0,
     expiry_mode: str = "dte",
+    expiry_slot: str | None = None,
     strike_depth=None,
     include_skew: bool = False,
 ):
-    if dte not in SUPPORTED_DTES:
-        raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
     expiry_mode = expiry_mode.lower()
-    if expiry_mode not in SUPPORTED_EXPIRY_MODES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported expiry_mode={expiry_mode}; expected one of {sorted(SUPPORTED_EXPIRY_MODES)}",
-        )
+    if expiry_slot is None:
+        if dte not in SUPPORTED_DTES:
+            raise HTTPException(status_code=400, detail=f"Unsupported dte={dte}; expected one of {sorted(SUPPORTED_DTES)}")
+        if expiry_mode not in SUPPORTED_EXPIRY_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported expiry_mode={expiry_mode}; expected one of {sorted(SUPPORTED_EXPIRY_MODES)}",
+            )
+    expiry_slot_requested = _resolve_requested_expiry_slot(expiry_slot=expiry_slot, expiry_mode=expiry_mode, dte=dte)
+
     symbol = symbol.upper()
     if symbol not in SUPPORTED_SYMBOLS:
         raise HTTPException(
@@ -861,7 +947,18 @@ def _fetch_snapshot(
         exp_targets = _resolve_expiration_targets(client, symbol=symbol, instrument_type=instrument_type)
         if not exp_targets:
             raise HTTPException(status_code=502, detail=f"No {symbol} expirations")
-        expiration = _pick_expiration(exp_targets, expiry_mode=expiry_mode, dte=dte)
+        if expiry_slot is not None:
+            expiry_slot_resolved, expiration = _resolve_expiration_for_slot(exp_targets, requested_slot=expiry_slot_requested)
+        else:
+            expiration = _pick_expiration(exp_targets, expiry_mode=expiry_mode, dte=dte)
+            expiry_slot_resolved = _match_slot_for_expiration(exp_targets, expiration) or expiry_slot_requested
+
+        if not expiration:
+            raise HTTPException(
+                status_code=502,
+                detail=f"No usable expiration for {symbol}; requested_slot={expiry_slot_requested}",
+            )
+
         expiration, by_strike, chain_ts = _get_chain_data(
             client,
             now_utc,
@@ -877,7 +974,7 @@ def _fetch_snapshot(
         # Append full-chain slim snapshot for analytics.
         full_rows = [by_strike[s] for s in sorted(by_strike.keys())]
         slim = [{"strike": s["strike"], "put_vol": s.get("put_vol"), "call_vol": s.get("call_vol")} for s in full_rows]
-        snapshot_buffer = _snapshot_buffers.setdefault((symbol, expiry_mode, dte), deque(maxlen=512))
+        snapshot_buffer = _snapshot_buffers.setdefault((symbol, expiration), deque(maxlen=512))
         snapshot_buffer.append((ts_iso, slim))
         _prune_buffer(snapshot_buffer, now_utc)
 
@@ -943,6 +1040,8 @@ def _fetch_snapshot(
             "symbol": symbol,
             "dte": dte,
             "expiry_mode": expiry_mode,
+            "expiry_slot_requested": expiry_slot_requested,
+            "expiry_slot_resolved": expiry_slot_resolved,
             "expiration": expiration,
             "days_to_expiry": days_to_expiry,
             "strike_window_size": strike_window_size,
@@ -971,6 +1070,7 @@ def get_snapshot(
     dte: int = 0,
     symbol: str = DEFAULT_SYMBOL,
     expiry_mode: str = "dte",
+    expiry_slot: str | None = None,
     strike_depth: str | None = None,
     include_skew: bool = False,
 ):
@@ -978,10 +1078,11 @@ def get_snapshot(
         symbol=symbol,
         dte=dte,
         expiry_mode=expiry_mode,
+        expiry_slot=expiry_slot,
         strike_depth=strike_depth,
         include_skew=include_skew,
     )
-    snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiry_mode"], dte), deque(maxlen=512))
+    snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiration"]), deque(maxlen=512))
     if mark_last_min is not None and mark_last_min > 0 and snapshot_buffer:
         now_utc = datetime.utcnow()
         target = now_utc - timedelta(minutes=mark_last_min)

@@ -17,13 +17,18 @@ From the **repo root**, use the `run` script so the correct venv and `.env` are 
 ./run spx_spread_credit               # SPX call credit spreads (mark + range until mark > $0.20)
 ```
 
-**SPX 0DTE Dashboard (web)** — Run the dashboard in your browser (Mac):
+**Multi-Symbol 0DTE Dashboard (web)** — Run the dashboard in your browser (Mac):
 
 ```bash
 ./run_web.sh
 ```
 
-Then open http://localhost:8000. The server serves the React frontend and `GET /api/snapshot` (SPX chain, volume, OI). Uses the same `.env` (`PUBLIC_COM_SECRET`, `PUBLIC_COM_ACCOUNT_ID`). First run builds the frontend and may take a minute.
+Then open http://localhost:8000. The server serves the React frontend and `GET /api/snapshot` (multi-symbol options chain, volume, OI). Uses the same `.env` (`PUBLIC_COM_SECRET`, `PUBLIC_COM_ACCOUNT_ID`). First run builds the frontend and may take a minute.
+
+Key snapshot query params:
+- `symbol`: `SPX`, `QQQ`, `SPY`, `NDX`, `NVDA`, `TSLA`, `AAPL`, `MSFT`, `GOOGL`, `META`, `AMZN`, `IBIT`, `AVGO`
+- `expiry_slot`: `0dte`, `next1`, or `next2` (new UI selector)
+- Legacy compatibility still supported: `expiry_mode` + `dte`
 
 Or with the venv explicitly: `.venv/bin/python3 scripts/get_quotes.py SPY QQQ`. Put your API key and account ID in a `.env` file (see `.env.example`). The first time you run `./run`, it will create `.venv` and install dependencies if needed.
 
