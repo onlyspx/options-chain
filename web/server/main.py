@@ -1,5 +1,5 @@
 """
-FastAPI server for the multi-symbol 0DTE dashboard.
+FastAPI server for the options-chain dashboard.
 Serves GET /api/snapshot (chain + quote) and static frontend from ../frontend/dist.
 Run from repo root: uvicorn web.server.main:app --reload
 """
@@ -37,7 +37,7 @@ try:
 except ImportError:
     PublicApiClient = None
 
-app = FastAPI(title="Multi-Symbol 0DTE Dashboard API")
+app = FastAPI(title="options-chain API")
 
 DEFAULT_SYMBOL = "SPX"
 SUPPORTED_SYMBOLS = {

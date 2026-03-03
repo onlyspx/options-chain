@@ -192,7 +192,7 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">Multi-Symbol 0DTE Dashboard</span>
+          <span className="title">options-chain</span>
           <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
           <span className="meta">Loading…</span>
         </div>
@@ -204,7 +204,7 @@ export default function App() {
     return (
       <div className="header">
         <div className="header-row">
-          <span className="title">Multi-Symbol 0DTE Dashboard</span>
+          <span className="title">options-chain</span>
           <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
@@ -340,7 +340,7 @@ export default function App() {
     <>
       <header className="header">
         <div className="header-row">
-          <span className="title">Multi-Symbol 0DTE Dashboard</span>
+          <span className="title">options-chain</span>
           <div className="symbol-picker">
             {SYMBOL_OPTIONS.map((sym) => (
               <button

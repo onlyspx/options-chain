@@ -1,10 +1,10 @@
 """
 Config loader for Public.com API.
-Reads from .env (repo root) or environment variables. No OpenClaw required.
+Reads from .env (repo root) or environment variables.
 """
 import os
 
-# Repo root = directory containing this file's parent (e.g. .../claw-skill-public-dot-com)
+# Repo root = directory containing this file's parent.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 

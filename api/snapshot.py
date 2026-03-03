@@ -1,5 +1,5 @@
 """
-Vercel API entrypoint for multi-symbol dashboard snapshot data.
+Vercel API entrypoint for options-chain snapshot data.
 
 This endpoint reuses the existing application logic from web.server.main.
 """
@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from web.server.main import get_snapshot
 
-app = FastAPI(title="Multi-Symbol Snapshot API")
+app = FastAPI(title="options-chain Snapshot API")
 
 
 @app.get("/")

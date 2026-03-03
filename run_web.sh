@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run SPX 0DTE dashboard on your Mac: backend + frontend at http://localhost:8000
+# Run options-chain dashboard on your Mac: backend + frontend at http://localhost:8000
 # From repo root. Uses .venv and .env.
 set -e
 cd "$(dirname "$0")"
@@ -12,6 +12,6 @@ fi
 if [[ -d web/frontend ]]; then
   (cd web/frontend && npm ci --silent 2>/dev/null || npm install --silent && npm run build)
 fi
-echo "Starting server at http://localhost:8000"
+echo "Starting options-chain dashboard at http://localhost:8000"
 (sleep 2 && open "http://localhost:8000" 2>/dev/null) &
 .venv/bin/uvicorn web.server.main:app --reload --host 0.0.0.0 --port 8000
