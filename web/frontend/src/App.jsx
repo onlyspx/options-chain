@@ -89,6 +89,13 @@ function formatExpiryDateShort(isoDate) {
   }
 }
 
+function getSpreadRomPct(spread) {
+  const credit = Number(spread?.mark_credit)
+  const width = Number(spread?.width)
+  if (!Number.isFinite(credit) || !Number.isFinite(width) || width <= 0) return null
+  return (credit / width) * 100
+}
+
 function getConnectionStatus(snapshot, quoteAgeMs, error) {
   if (error && !snapshot) return 'error'
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'error'
@@ -120,8 +127,8 @@ export default function App() {
   const [, setTick] = useState(0)
   const [markLastMin, setMarkLastMin] = useState(0)
   const [showDelta, setShowDelta] = useState(false)
-  const [spreadMinCredit, setSpreadMinCredit] = useState(0.25)
-  const [spreadMaxCredit, setSpreadMaxCredit] = useState(0.5)
+  const [spreadMinRomPct, setSpreadMinRomPct] = useState(3)
+  const [spreadMaxRomPct, setSpreadMaxRomPct] = useState(7)
   const [strikeDepth, setStrikeDepth] = useState(25)
   const [showBidAsk, setShowBidAsk] = useState(false)
   const [showDerivedCols, setShowDerivedCols] = useState(false)
@@ -250,16 +257,14 @@ export default function App() {
   const activeStrikeDepth = strike_window_size ?? strikeDepth
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
-  const loCredit = Math.min(spreadMinCredit, spreadMaxCredit)
-  const hiCredit = Math.max(spreadMinCredit, spreadMaxCredit)
-  const filteredCallCreditSpreads = callCreditSpreads.filter((s) => {
-    const mark = Number(s.mark_credit)
-    return Number.isFinite(mark) && mark >= loCredit && mark <= hiCredit
-  })
-  const filteredPutCreditSpreads = putCreditSpreads.filter((s) => {
-    const mark = Number(s.mark_credit)
-    return Number.isFinite(mark) && mark >= loCredit && mark <= hiCredit
-  })
+  const loRomPct = Math.min(spreadMinRomPct, spreadMaxRomPct)
+  const hiRomPct = Math.max(spreadMinRomPct, spreadMaxRomPct)
+  const filteredCallCreditSpreads = callCreditSpreads
+    .map((s) => ({ ...s, rom_pct: getSpreadRomPct(s) }))
+    .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
+  const filteredPutCreditSpreads = putCreditSpreads
+    .map((s) => ({ ...s, rom_pct: getSpreadRomPct(s) }))
+    .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
   const skewMetrics = skew_analysis?.metrics || {}
   const skewNodes = skew_analysis?.nodes || {}
   const skewDiagnostics = skew_analysis?.diagnostics || {}
@@ -775,32 +780,32 @@ export default function App() {
 
       <section className="main-section">
         <div className="section-head">
-          <span className="section-title">Far OTM vertical spreads (adjacent strike, mark &le; 0.50)</span>
+          <span className="section-title">Far OTM vertical spreads (adjacent strike)</span>
           <div className="section-controls spread-filters">
             <label>
-              Credit min:
+              ROM min %:
               <input
                 type="number"
                 min="0"
-                max="1"
-                step="0.01"
-                value={spreadMinCredit}
-                onChange={(e) => setSpreadMinCredit(Number(e.target.value || 0))}
+                max="100"
+                step="0.1"
+                value={spreadMinRomPct}
+                onChange={(e) => setSpreadMinRomPct(Number(e.target.value || 0))}
               />
             </label>
             <label>
-              Credit max:
+              ROM max %:
               <input
                 type="number"
                 min="0"
-                max="1"
-                step="0.01"
-                value={spreadMaxCredit}
-                onChange={(e) => setSpreadMaxCredit(Number(e.target.value || 0))}
+                max="100"
+                step="0.1"
+                value={spreadMaxRomPct}
+                onChange={(e) => setSpreadMaxRomPct(Number(e.target.value || 0))}
               />
             </label>
-            <button type="button" className="btn-refresh" onClick={() => { setSpreadMinCredit(0.25); setSpreadMaxCredit(0.5) }}>
-              0.25-0.50
+            <button type="button" className="btn-refresh" onClick={() => { setSpreadMinRomPct(3); setSpreadMaxRomPct(7) }}>
+              3-7%
             </button>
           </div>
         </div>
@@ -812,6 +817,7 @@ export default function App() {
                 <tr>
                   <th>Short/Long</th>
                   <th>Mark</th>
+                  <th>ROM%</th>
                   <th>Bid</th>
                   <th>Ask</th>
                   <th>POP (IV/BE)</th>
@@ -821,11 +827,12 @@ export default function App() {
               </thead>
               <tbody>
                 {filteredCallCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="7" className="empty-cell">No call spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">No call spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
                 ) : filteredCallCreditSpreads.map((s) => (
                   <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>
+                    <td>{formatPct(s.rom_pct)}</td>
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
                     <td>{formatPct(s.pop_pct)}</td>
@@ -843,6 +850,7 @@ export default function App() {
                 <tr>
                   <th>Short/Long</th>
                   <th>Mark</th>
+                  <th>ROM%</th>
                   <th>Bid</th>
                   <th>Ask</th>
                   <th>POP (IV/BE)</th>
@@ -852,11 +860,12 @@ export default function App() {
               </thead>
               <tbody>
                 {filteredPutCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="7" className="empty-cell">No put spreads in credit range {formatPrice(loCredit)}-{formatPrice(hiCredit)}</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">No put spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
                 ) : filteredPutCreditSpreads.map((s) => (
                   <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
                     <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
                     <td>{formatPrice(s.mark_credit)}</td>
+                    <td>{formatPct(s.rom_pct)}</td>
                     <td>{formatPrice(s.bid_credit)}</td>
                     <td>{formatPrice(s.ask_credit)}</td>
                     <td>{formatPct(s.pop_pct)}</td>
