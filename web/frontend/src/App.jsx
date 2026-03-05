@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 const API_SNAPSHOT = '/api/snapshot'
 const BAR_MAX_PX = 95
@@ -16,6 +16,7 @@ const EXPIRY_OPTIONS = [
   { key: 'slot-next2', label: 'next2', slot: 'next2', expKey: 'slot_next2' },
 ]
 const EXPIRY_SLOT_LABELS = { '0dte': '0dte', 'next1': 'next1', 'next2': 'next2' }
+const MONTH_ABBRS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function formatTimestamp(iso) {
   if (!iso) return '--'
@@ -96,6 +97,38 @@ function getSpreadRomPct(spread) {
   return (credit / width) * 100
 }
 
+function formatTosExpiry(isoDate) {
+  if (typeof isoDate !== 'string') return null
+  const parts = isoDate.split('-')
+  if (parts.length !== 3) return null
+  const y = Number(parts[0])
+  const m = Number(parts[1])
+  const d = Number(parts[2])
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d) || m < 1 || m > 12 || d < 1 || d > 31) {
+    return null
+  }
+  const yy = String(y).slice(-2).padStart(2, '0')
+  return `${String(d).padStart(2, '0')} ${MONTH_ABBRS[m - 1]} ${yy}`
+}
+
+function formatTosStrike(strike) {
+  const n = Number(strike)
+  if (!Number.isFinite(n)) return null
+  return String(Math.trunc(n))
+}
+
+function buildTosVerticalOrder({ spread, side, symbol, expiration }) {
+  const symbolToken = typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
+  const expiryToken = formatTosExpiry(expiration)
+  const shortStrike = formatTosStrike(spread?.short_strike)
+  const longStrike = formatTosStrike(spread?.long_strike)
+  const mark = Number(spread?.mark_credit)
+  if (!symbolToken || !expiryToken || !shortStrike || !longStrike || !Number.isFinite(mark)) return null
+  const sideToken = side === 'call' ? 'CALL' : side === 'put' ? 'PUT' : null
+  if (!sideToken) return null
+  return `SELL -1 Vertical ${symbolToken} 100 ${expiryToken} ${shortStrike}/${longStrike} ${sideToken} @${mark.toFixed(2)} LMT`
+}
+
 function getConnectionStatus(snapshot, quoteAgeMs, error) {
   if (error && !snapshot) return 'error'
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'error'
@@ -133,6 +166,10 @@ export default function App() {
   const [showBidAsk, setShowBidAsk] = useState(false)
   const [showDerivedCols, setShowDerivedCols] = useState(false)
   const [showSkew, setShowSkew] = useState(false)
+  const [copiedTosKey, setCopiedTosKey] = useState(null)
+  const [tosCopyError, setTosCopyError] = useState(null)
+  const [tosPreviewOrder, setTosPreviewOrder] = useState(null)
+  const copyResetRef = useRef(null)
 
   const fetchSnapshot = useCallback(async () => {
     setError(null)
@@ -178,6 +215,35 @@ export default function App() {
     const id = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(id)
   }, [snapshot])
+
+  useEffect(() => {
+    return () => {
+      if (copyResetRef.current) {
+        clearTimeout(copyResetRef.current)
+      }
+    }
+  }, [])
+
+  const copyTosOrder = useCallback(async (orderText, rowKey) => {
+    if (!orderText) return
+    setTosPreviewOrder(orderText)
+    setTosCopyError(null)
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(orderText)
+      setCopiedTosKey(rowKey)
+      if (copyResetRef.current) {
+        clearTimeout(copyResetRef.current)
+      }
+      copyResetRef.current = setTimeout(() => {
+        setCopiedTosKey(null)
+      }, 1200)
+    } catch {
+      setTosCopyError('Copy failed (clipboard blocked).')
+    }
+  }, [])
 
   const titleSymbol = snapshot?.symbol || selectedSymbol
   const titlePrice = snapshot?.symbol_price ?? snapshot?.spx_price
@@ -808,6 +874,12 @@ export default function App() {
               3-7%
             </button>
           </div>
+          {tosCopyError && <span className="tos-copy-error">{tosCopyError}</span>}
+          {tosPreviewOrder && (
+            <div className="tos-preview">
+              <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
+            </div>
+          )}
         </div>
         <div className="split-panels">
           <div>
@@ -823,23 +895,38 @@ export default function App() {
                   <th>POP (IV/BE)</th>
                   <th>POP (Δ)</th>
                   <th>Dist</th>
+                  <th className="tos-action-col">TOS</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredCallCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="8" className="empty-cell">No call spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
-                ) : filteredCallCreditSpreads.map((s) => (
-                  <tr key={`cs-${s.short_strike}-${s.long_strike}`}>
-                    <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
-                    <td>{formatPrice(s.mark_credit)}</td>
-                    <td>{formatPct(s.rom_pct)}</td>
-                    <td>{formatPrice(s.bid_credit)}</td>
-                    <td>{formatPrice(s.ask_credit)}</td>
-                    <td>{formatPct(s.pop_pct)}</td>
-                    <td>{formatPct(s.pop_delta_pct)}</td>
-                    <td>{formatPrice(s.distance_from_spx)}</td>
-                  </tr>
-                ))}
+                  <tr><td colSpan="9" className="empty-cell">No call spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                ) : filteredCallCreditSpreads.map((s) => {
+                  const rowKey = `cs-${s.short_strike}-${s.long_strike}`
+                  const tosOrder = buildTosVerticalOrder({ spread: s, side: 'call', symbol: activeSymbol, expiration })
+                  return (
+                    <tr key={rowKey}>
+                      <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
+                      <td>{formatPrice(s.mark_credit)}</td>
+                      <td>{formatPct(s.rom_pct)}</td>
+                      <td>{formatPrice(s.bid_credit)}</td>
+                      <td>{formatPrice(s.ask_credit)}</td>
+                      <td>{formatPct(s.pop_pct)}</td>
+                      <td>{formatPct(s.pop_delta_pct)}</td>
+                      <td>{formatPrice(s.distance_from_spx)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, rowKey)}
+                        >
+                          {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -856,23 +943,38 @@ export default function App() {
                   <th>POP (IV/BE)</th>
                   <th>POP (Δ)</th>
                   <th>Dist</th>
+                  <th className="tos-action-col">TOS</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPutCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="8" className="empty-cell">No put spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
-                ) : filteredPutCreditSpreads.map((s) => (
-                  <tr key={`ps-${s.short_strike}-${s.long_strike}`}>
-                    <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
-                    <td>{formatPrice(s.mark_credit)}</td>
-                    <td>{formatPct(s.rom_pct)}</td>
-                    <td>{formatPrice(s.bid_credit)}</td>
-                    <td>{formatPrice(s.ask_credit)}</td>
-                    <td>{formatPct(s.pop_pct)}</td>
-                    <td>{formatPct(s.pop_delta_pct)}</td>
-                    <td>{formatPrice(s.distance_from_spx)}</td>
-                  </tr>
-                ))}
+                  <tr><td colSpan="9" className="empty-cell">No put spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                ) : filteredPutCreditSpreads.map((s) => {
+                  const rowKey = `ps-${s.short_strike}-${s.long_strike}`
+                  const tosOrder = buildTosVerticalOrder({ spread: s, side: 'put', symbol: activeSymbol, expiration })
+                  return (
+                    <tr key={rowKey}>
+                      <td>{formatPrice(s.short_strike)}/{formatPrice(s.long_strike)}</td>
+                      <td>{formatPrice(s.mark_credit)}</td>
+                      <td>{formatPct(s.rom_pct)}</td>
+                      <td>{formatPrice(s.bid_credit)}</td>
+                      <td>{formatPrice(s.ask_credit)}</td>
+                      <td>{formatPct(s.pop_pct)}</td>
+                      <td>{formatPct(s.pop_delta_pct)}</td>
+                      <td>{formatPrice(s.distance_from_spx)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, rowKey)}
+                        >
+                          {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -764,6 +764,65 @@ body {
   text-align: left;
 }
 
+.mini-table th.tos-action-col,
+.mini-table td.tos-action-col {
+  text-align: center;
+  width: 76px;
+  white-space: nowrap;
+}
+
+.btn-copy-tos {
+  border: 1px solid var(--refresh-border);
+  background: var(--refresh-bg);
+  color: var(--refresh-text);
+  border-radius: 8px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', 'Courier New', monospace;
+}
+
+.btn-copy-tos:hover:not(:disabled) {
+  border-color: var(--refresh-border-hover);
+  background: var(--refresh-bg-hover);
+  color: var(--refresh-text-hover);
+}
+
+.btn-copy-tos:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-copy-tos.copied {
+  color: var(--positive);
+  border-color: color-mix(in srgb, var(--positive) 55%, transparent);
+  background: var(--positive-soft);
+}
+
+.tos-copy-error {
+  color: var(--negative);
+  font-size: 12px;
+}
+
+.tos-preview {
+  width: 100%;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', 'Courier New', monospace;
+  padding: 6px 8px;
+  border: 1px solid var(--table-border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  word-break: break-word;
+}
+
+.tos-preview-label {
+  color: var(--section-title-color);
+  font-weight: 700;
+}
+
 .empty-cell {
   text-align: center !important;
   color: var(--empty-color);
