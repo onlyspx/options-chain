@@ -892,7 +892,6 @@ export default function App() {
                   <th>ROM%</th>
                   <th>Bid</th>
                   <th>Ask</th>
-                  <th>POP (IV/BE)</th>
                   <th>POP (Δ)</th>
                   <th>Dist</th>
                   <th className="tos-action-col">TOS</th>
@@ -900,7 +899,7 @@ export default function App() {
               </thead>
               <tbody>
                 {filteredCallCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="9" className="empty-cell">No call spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">No call spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
                 ) : filteredCallCreditSpreads.map((s) => {
                   const rowKey = `cs-${s.short_strike}-${s.long_strike}`
                   const tosOrder = buildTosVerticalOrder({ spread: s, side: 'call', symbol: activeSymbol, expiration })
@@ -911,7 +910,6 @@ export default function App() {
                       <td>{formatPct(s.rom_pct)}</td>
                       <td>{formatPrice(s.bid_credit)}</td>
                       <td>{formatPrice(s.ask_credit)}</td>
-                      <td>{formatPct(s.pop_pct)}</td>
                       <td>{formatPct(s.pop_delta_pct)}</td>
                       <td>{formatPrice(s.distance_from_spx)}</td>
                       <td className="tos-action-col">
@@ -940,7 +938,6 @@ export default function App() {
                   <th>ROM%</th>
                   <th>Bid</th>
                   <th>Ask</th>
-                  <th>POP (IV/BE)</th>
                   <th>POP (Δ)</th>
                   <th>Dist</th>
                   <th className="tos-action-col">TOS</th>
@@ -948,7 +945,7 @@ export default function App() {
               </thead>
               <tbody>
                 {filteredPutCreditSpreads.length === 0 ? (
-                  <tr><td colSpan="9" className="empty-cell">No put spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">No put spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
                 ) : filteredPutCreditSpreads.map((s) => {
                   const rowKey = `ps-${s.short_strike}-${s.long_strike}`
                   const tosOrder = buildTosVerticalOrder({ spread: s, side: 'put', symbol: activeSymbol, expiration })
@@ -959,7 +956,6 @@ export default function App() {
                       <td>{formatPct(s.rom_pct)}</td>
                       <td>{formatPrice(s.bid_credit)}</td>
                       <td>{formatPrice(s.ask_credit)}</td>
-                      <td>{formatPct(s.pop_pct)}</td>
                       <td>{formatPct(s.pop_delta_pct)}</td>
                       <td>{formatPrice(s.distance_from_spx)}</td>
                       <td className="tos-action-col">
