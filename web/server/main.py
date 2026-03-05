@@ -63,6 +63,7 @@ SNAPSHOT_BUFFER_MAX_AGE_MINUTES = 5
 HOT_STRIKES_TOP_N = 8
 SKEW_GREEKS_WINDOW_STRIKES = 30
 SKEW_MIN_COVERAGE_WARN_PCT = 60.0
+GREEKS_FETCH_CHUNK_SIZE = 100
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 SUPPORTED_EXPIRY_SLOTS = {"0dte", "next1", "next2"}
@@ -512,47 +513,219 @@ def _compute_spread_scanner(by_strike, spx_price):
     }
 
 
-def _get_option_greeks_map(client, now_utc: datetime, symbol: str, expiration: str, osi_symbols: list[str]):
-    symbols = sorted({s for s in osi_symbols if s})
-    if not symbols:
-        return {}
-    cache_key = (symbol, expiration)
-    cache_entry = _greeks_cache_by_symbol_exp.get(cache_key)
-    if cache_entry:
-        fetched_at = cache_entry.get("fetched_at")
-        by_osi = cache_entry.get("by_osi") or {}
-        if (
-            fetched_at is not None
-            and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS
-            and all(sym in by_osi for sym in symbols)
-        ):
-            return {sym: by_osi.get(sym, {}) for sym in symbols}
-    try:
-        response = client.get_option_greeks(osi_symbols=symbols)
-    except Exception:
-        if cache_entry and cache_entry.get("by_osi"):
-            return {sym: cache_entry["by_osi"].get(sym, {}) for sym in symbols}
-        return {}
-    by_osi = {}
-    if cache_entry and cache_entry.get("by_osi"):
-        by_osi.update(cache_entry["by_osi"])
+def _compute_bwb_scanner(by_strike, spx_price, greeks_by_osi):
+    empty = {
+        "call_bwb_credit_spreads": [],
+        "put_bwb_credit_spreads": [],
+    }
+    if spx_price is None or not by_strike:
+        return empty
+
+    strikes = sorted(by_strike.keys())
+    if len(strikes) < 4:
+        return empty
+
+    def _leg_data(strike, side):
+        row = by_strike.get(strike, {})
+        if side == "call":
+            return (
+                _decimal_float(row.get("call_bid")),
+                _decimal_float(row.get("call_ask")),
+                row.get("call_osi"),
+                row.get("call_vol"),
+                row.get("call_oi"),
+            )
+        return (
+            _decimal_float(row.get("put_bid")),
+            _decimal_float(row.get("put_ask")),
+            row.get("put_osi"),
+            row.get("put_vol"),
+            row.get("put_oi"),
+        )
+
+    def _bwb_entry(side, low_strike, mid_strike, high_strike):
+        low_bid, low_ask, _low_osi, _low_vol, _low_oi = _leg_data(low_strike, side)
+        mid_bid, mid_ask, mid_osi, mid_vol, mid_oi = _leg_data(mid_strike, side)
+        high_bid, high_ask, _high_osi, _high_vol, _high_oi = _leg_data(high_strike, side)
+        if None in (low_bid, low_ask, mid_bid, mid_ask, high_bid, high_ask):
+            return None
+
+        low_mid = _mid(low_bid, low_ask)
+        mid_mid = _mid(mid_bid, mid_ask)
+        high_mid = _mid(high_bid, high_ask)
+        if None in (low_mid, mid_mid, high_mid):
+            return None
+
+        bid_credit = round((2.0 * mid_bid) - low_ask - high_ask, 2)
+        ask_credit = round((2.0 * mid_ask) - low_bid - high_bid, 2)
+        mark_credit = round((2.0 * mid_mid) - low_mid - high_mid, 2)
+        if mark_credit <= 0:
+            return None
+
+        if side == "call":
+            narrow_wing_width = round(mid_strike - low_strike, 2)
+            broken_wing_width = round(high_strike - mid_strike, 2)
+            breakeven = round(mid_strike + narrow_wing_width + mark_credit, 2)
+        else:
+            narrow_wing_width = round(high_strike - mid_strike, 2)
+            broken_wing_width = round(mid_strike - low_strike, 2)
+            breakeven = round(mid_strike - narrow_wing_width - mark_credit, 2)
+        if narrow_wing_width <= 0 or broken_wing_width <= narrow_wing_width:
+            return None
+
+        max_loss = round(broken_wing_width - narrow_wing_width - mark_credit, 2)
+        if max_loss <= 0:
+            return None
+        max_profit = round(narrow_wing_width + mark_credit, 2)
+        rom_pct = round((mark_credit / max_loss) * 100.0, 1)
+
+        body_delta = None
+        pop_delta_pct = None
+        if mid_osi:
+            greek = greeks_by_osi.get(mid_osi, {}) if greeks_by_osi else {}
+            body_delta = _decimal_float(greek.get("delta"))
+            if body_delta is not None:
+                pop_delta = max(0.0, min(1.0, 1.0 - abs(body_delta)))
+                pop_delta_pct = round(pop_delta * 100.0, 1)
+                body_delta = round(body_delta, 4)
+
+        return {
+            "side": side,
+            "low_strike": low_strike,
+            "mid_strike": mid_strike,
+            "high_strike": high_strike,
+            "narrow_wing_width": narrow_wing_width,
+            "broken_wing_width": broken_wing_width,
+            "distance_from_spx": round(abs(mid_strike - spx_price), 2),
+            "bid_credit": bid_credit,
+            "ask_credit": ask_credit,
+            "mark_credit": mark_credit,
+            "max_loss": max_loss,
+            "max_profit": max_profit,
+            "rom_pct": rom_pct,
+            "breakeven": breakeven,
+            "body_delta": body_delta,
+            "pop_delta_pct": pop_delta_pct,
+            "body_volume": mid_vol,
+            "body_oi": mid_oi,
+        }
+
+    call_bwbs = []
+    put_bwbs = []
+
+    # Put BWB: +1 high / -2 mid / +1 low (wider downside wing), all strikes below spot.
+    for mid_idx in range(1, len(strikes) - 1):
+        mid = strikes[mid_idx]
+        high = strikes[mid_idx + 1]
+        narrow_width = high - mid
+        if narrow_width <= 0:
+            continue
+        low_idx = None
+        for cand_idx in range(mid_idx - 1, -1, -1):
+            if (mid - strikes[cand_idx]) > narrow_width:
+                low_idx = cand_idx
+                break
+        if low_idx is None:
+            continue
+        low = strikes[low_idx]
+        if not (low < spx_price and mid < spx_price and high < spx_price):
+            continue
+        entry = _bwb_entry("put", low, mid, high)
+        if entry:
+            put_bwbs.append(entry)
+
+    # Call BWB: +1 low / -2 mid / +1 high (wider upside wing), all strikes above spot.
+    for mid_idx in range(1, len(strikes) - 1):
+        low = strikes[mid_idx - 1]
+        mid = strikes[mid_idx]
+        narrow_width = mid - low
+        if narrow_width <= 0:
+            continue
+        high_idx = None
+        for cand_idx in range(mid_idx + 1, len(strikes)):
+            if (strikes[cand_idx] - mid) > narrow_width:
+                high_idx = cand_idx
+                break
+        if high_idx is None:
+            continue
+        high = strikes[high_idx]
+        if not (low > spx_price and mid > spx_price and high > spx_price):
+            continue
+        entry = _bwb_entry("call", low, mid, high)
+        if entry:
+            call_bwbs.append(entry)
+
+    def _sort_key(row):
+        return (
+            -(_decimal_float(row.get("rom_pct")) or 0.0),
+            -(_decimal_float(row.get("distance_from_spx")) or 0.0),
+            -(_decimal_float(row.get("mark_credit")) or 0.0),
+        )
+
+    call_bwbs.sort(key=_sort_key)
+    put_bwbs.sort(key=_sort_key)
+    return {
+        "call_bwb_credit_spreads": call_bwbs,
+        "put_bwb_credit_spreads": put_bwbs,
+    }
+
+
+def _chunk_symbols(symbols: list[str], chunk_size: int):
+    size = max(1, int(chunk_size or 1))
+    for i in range(0, len(symbols), size):
+        yield symbols[i:i + size]
+
+
+def _parse_greeks_response_by_osi(response):
+    parsed = {}
     for greek_data in getattr(response, "greeks", []) or []:
         osi = getattr(greek_data, "osi_symbol", None) or getattr(greek_data, "symbol", None)
         if not osi:
             continue
         greeks_obj = getattr(greek_data, "greeks", None)
         if greeks_obj is None:
-            by_osi[osi] = {"delta": None, "implied_volatility": None}
+            parsed[osi] = {"delta": None, "implied_volatility": None}
             continue
-        by_osi[osi] = {
+        parsed[osi] = {
             "delta": _decimal_float(getattr(greeks_obj, "delta", None)),
             "implied_volatility": _decimal_float(getattr(greeks_obj, "implied_volatility", None)),
         }
-    _greeks_cache_by_symbol_exp[cache_key] = {
-        "fetched_at": now_utc,
-        "by_osi": by_osi,
-        "timestamp": _iso_utc(now_utc),
-    }
+    return parsed
+
+
+def _get_option_greeks_map(client, now_utc: datetime, symbol: str, expiration: str, osi_symbols: list[str]):
+    symbols = sorted({s for s in osi_symbols if s})
+    if not symbols:
+        return {}
+    cache_key = (symbol, expiration)
+    cache_entry = _greeks_cache_by_symbol_exp.get(cache_key)
+    cached_by_osi = cache_entry.get("by_osi") if cache_entry else {}
+    cached_by_osi = cached_by_osi or {}
+    if cache_entry:
+        fetched_at = cache_entry.get("fetched_at")
+        if (
+            fetched_at is not None
+            and (now_utc - fetched_at).total_seconds() < CHAIN_REFRESH_SECONDS
+            and all(sym in cached_by_osi for sym in symbols)
+        ):
+            return {sym: cached_by_osi.get(sym, {}) for sym in symbols}
+
+    by_osi = dict(cached_by_osi)
+    successful_fetch = False
+    for chunk in _chunk_symbols(symbols, GREEKS_FETCH_CHUNK_SIZE):
+        try:
+            response = client.get_option_greeks(osi_symbols=chunk)
+        except Exception:
+            continue
+        successful_fetch = True
+        by_osi.update(_parse_greeks_response_by_osi(response))
+
+    if successful_fetch:
+        _greeks_cache_by_symbol_exp[cache_key] = {
+            "fetched_at": now_utc,
+            "by_osi": by_osi,
+            "timestamp": _iso_utc(now_utc),
+        }
     return {sym: by_osi.get(sym, {}) for sym in symbols}
 
 
@@ -877,6 +1050,54 @@ def _attach_pop_to_spreads(spreads, side: str, by_strike, greeks_by_osi, symbol_
         spread["pop_delta_method"] = pop_delta_method
 
 
+def _attach_pop_to_bwbs(spreads, side: str, by_strike, greeks_by_osi):
+    for spread in spreads:
+        mid_strike = _decimal_float(spread.get("mid_strike"))
+        mid_row = by_strike.get(mid_strike, {})
+        mid_osi = mid_row.get("call_osi") if side == "call" else mid_row.get("put_osi")
+        greek = greeks_by_osi.get(mid_osi, {}) if mid_osi else {}
+        delta = _decimal_float(greek.get("delta"))
+
+        if delta is None:
+            spread["body_delta"] = None
+            spread["pop_delta"] = None
+            spread["pop_delta_pct"] = None
+            spread["pop_delta_method"] = "unavailable"
+            continue
+
+        pop_delta = max(0.0, min(1.0, 1.0 - abs(delta)))
+        spread["body_delta"] = round(delta, 4)
+        spread["pop_delta"] = round(pop_delta, 4)
+        spread["pop_delta_pct"] = round(pop_delta * 100.0, 1)
+        spread["pop_delta_method"] = "delta_direct"
+
+
+def _collect_spread_osi_symbols(spread_scanner, by_strike):
+    symbols = []
+
+    def _append_vertical(rows, side):
+        for spread in rows:
+            short_strike = _decimal_float(spread.get("short_strike"))
+            row = by_strike.get(short_strike, {})
+            osi = row.get("call_osi") if side == "call" else row.get("put_osi")
+            if osi:
+                symbols.append(osi)
+
+    def _append_bwb(rows, side):
+        for spread in rows:
+            mid_strike = _decimal_float(spread.get("mid_strike"))
+            row = by_strike.get(mid_strike, {})
+            osi = row.get("call_osi") if side == "call" else row.get("put_osi")
+            if osi:
+                symbols.append(osi)
+
+    _append_vertical(spread_scanner.get("call_credit_spreads", []), "call")
+    _append_vertical(spread_scanner.get("put_credit_spreads", []), "put")
+    _append_bwb(spread_scanner.get("call_bwb_credit_spreads", []), "call")
+    _append_bwb(spread_scanner.get("put_bwb_credit_spreads", []), "put")
+    return sorted({s for s in symbols if s})
+
+
 def _resolve_account_id(secret: str, account_id: str | None) -> str:
     """Resolve account id from env, or auto-discover the first account."""
     if account_id:
@@ -983,19 +1204,44 @@ def _fetch_snapshot(
             full_rows, snapshot_buffer=snapshot_buffer, target_minutes=5, top_n=HOT_STRIKES_TOP_N
         )
         spread_scanner = _compute_spread_scanner(by_strike, symbol_price)
-        chain_osi_symbols = []
-        for row in by_strike.values():
-            if row.get("call_osi"):
-                chain_osi_symbols.append(row.get("call_osi"))
-            if row.get("put_osi"):
-                chain_osi_symbols.append(row.get("put_osi"))
+        spread_scanner.update(_compute_bwb_scanner(by_strike, symbol_price, {}))
+        spread_osi_symbols = _collect_spread_osi_symbols(spread_scanner, by_strike)
         greeks_by_osi = _get_option_greeks_map(
             client,
             now_utc,
             symbol=symbol,
             expiration=expiration,
-            osi_symbols=chain_osi_symbols,
+            osi_symbols=spread_osi_symbols,
         )
+        _attach_pop_to_spreads(
+            spread_scanner.get("call_credit_spreads", []),
+            side="call",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+            symbol_price=symbol_price,
+            days_to_expiry=days_to_expiry,
+        )
+        _attach_pop_to_spreads(
+            spread_scanner.get("put_credit_spreads", []),
+            side="put",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+            symbol_price=symbol_price,
+            days_to_expiry=days_to_expiry,
+        )
+        _attach_pop_to_bwbs(
+            spread_scanner.get("call_bwb_credit_spreads", []),
+            side="call",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+        )
+        _attach_pop_to_bwbs(
+            spread_scanner.get("put_bwb_credit_spreads", []),
+            side="put",
+            by_strike=by_strike,
+            greeks_by_osi=greeks_by_osi,
+        )
+
         skew_analysis = None
         if include_skew:
             skew_osi_symbols = _select_skew_osi_symbols(
@@ -1019,22 +1265,6 @@ def _fetch_snapshot(
                 days_to_expiry=days_to_expiry,
                 requested_osi_symbols=skew_osi_symbols,
             )
-        _attach_pop_to_spreads(
-            spread_scanner.get("call_credit_spreads", []),
-            side="call",
-            by_strike=by_strike,
-            greeks_by_osi=greeks_by_osi,
-            symbol_price=symbol_price,
-            days_to_expiry=days_to_expiry,
-        )
-        _attach_pop_to_spreads(
-            spread_scanner.get("put_credit_spreads", []),
-            side="put",
-            by_strike=by_strike,
-            greeks_by_osi=greeks_by_osi,
-            symbol_price=symbol_price,
-            days_to_expiry=days_to_expiry,
-        )
 
         return {
             "symbol": symbol,

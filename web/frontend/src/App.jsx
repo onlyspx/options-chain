@@ -17,6 +17,7 @@ const EXPIRY_OPTIONS = [
 ]
 const EXPIRY_SLOT_LABELS = { '0dte': '0dte', 'next1': 'next1', 'next2': 'next2' }
 const MONTH_ABBRS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const MONTH_ABBRS_UPPER = MONTH_ABBRS.map((m) => m.toUpperCase())
 
 function formatTimestamp(iso) {
   if (!iso) return '--'
@@ -97,6 +98,56 @@ function getSpreadRomPct(spread) {
   return (credit / width) * 100
 }
 
+function getBwbRomPct(spread) {
+  const rom = Number(spread?.rom_pct)
+  if (Number.isFinite(rom)) return rom
+  const credit = Number(spread?.mark_credit)
+  const maxLoss = Number(spread?.max_loss)
+  if (!Number.isFinite(credit) || !Number.isFinite(maxLoss) || maxLoss <= 0) return null
+  return (credit / maxLoss) * 100
+}
+
+function getSpreadDeterministicKey(spread) {
+  const fields = [
+    spread?.short_strike,
+    spread?.long_strike,
+    spread?.low_strike,
+    spread?.mid_strike,
+    spread?.high_strike,
+  ]
+  return fields
+    .map((v) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? n.toFixed(3) : '~'
+    })
+    .join('|')
+}
+
+function compareSpreadsByDistanceAsc(a, b) {
+  const aDist = Number(a?.distance_from_spx)
+  const bDist = Number(b?.distance_from_spx)
+  const aHasDist = Number.isFinite(aDist)
+  const bHasDist = Number.isFinite(bDist)
+  if (aHasDist !== bHasDist) return aHasDist ? -1 : 1
+  if (aHasDist && aDist !== bDist) return aDist - bDist
+
+  const aRom = Number(a?.rom_pct)
+  const bRom = Number(b?.rom_pct)
+  const aHasRom = Number.isFinite(aRom)
+  const bHasRom = Number.isFinite(bRom)
+  if (aHasRom !== bHasRom) return aHasRom ? -1 : 1
+  if (aHasRom && aRom !== bRom) return bRom - aRom
+
+  const aMark = Number(a?.mark_credit)
+  const bMark = Number(b?.mark_credit)
+  const aHasMark = Number.isFinite(aMark)
+  const bHasMark = Number.isFinite(bMark)
+  if (aHasMark !== bHasMark) return aHasMark ? -1 : 1
+  if (aHasMark && aMark !== bMark) return bMark - aMark
+
+  return getSpreadDeterministicKey(a).localeCompare(getSpreadDeterministicKey(b))
+}
+
 function formatTosExpiry(isoDate) {
   if (typeof isoDate !== 'string') return null
   const parts = isoDate.split('-')
@@ -109,6 +160,20 @@ function formatTosExpiry(isoDate) {
   }
   const yy = String(y).slice(-2).padStart(2, '0')
   return `${String(d).padStart(2, '0')} ${MONTH_ABBRS[m - 1]} ${yy}`
+}
+
+function formatTosExpiryCompact(isoDate) {
+  if (typeof isoDate !== 'string') return null
+  const parts = isoDate.split('-')
+  if (parts.length !== 3) return null
+  const y = Number(parts[0])
+  const m = Number(parts[1])
+  const d = Number(parts[2])
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d) || m < 1 || m > 12 || d < 1 || d > 31) {
+    return null
+  }
+  const yy = String(y).slice(-2).padStart(2, '0')
+  return `${d} ${MONTH_ABBRS_UPPER[m - 1]} ${yy}`
 }
 
 function formatTosStrike(strike) {
@@ -127,6 +192,23 @@ function buildTosVerticalOrder({ spread, side, symbol, expiration }) {
   const sideToken = side === 'call' ? 'CALL' : side === 'put' ? 'PUT' : null
   if (!sideToken) return null
   return `SELL -1 Vertical ${symbolToken} 100 ${expiryToken} ${shortStrike}/${longStrike} ${sideToken} @${mark.toFixed(2)} LMT`
+}
+
+function buildTosBwbOrder({ spread, side, symbol, expiration }) {
+  const symbolToken = typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''
+  const expiryToken = formatTosExpiryCompact(expiration)
+  const lowStrike = formatTosStrike(spread?.low_strike)
+  const midStrike = formatTosStrike(spread?.mid_strike)
+  const highStrike = formatTosStrike(spread?.high_strike)
+  const mark = Number(spread?.mark_credit)
+  if (!symbolToken || !expiryToken || !lowStrike || !midStrike || !highStrike || !Number.isFinite(mark)) return null
+  const sideToken = side === 'call' ? 'CALL' : side === 'put' ? 'PUT' : null
+  if (!sideToken) return null
+  const signedCredit = (-Math.abs(mark)).toFixed(2).replace(/^-0(?=\.)/, '-')
+  const strikesToken = side === 'put'
+    ? `${highStrike}/${midStrike}/${lowStrike}`
+    : `${lowStrike}/${midStrike}/${highStrike}`
+  return `BUY +1 BUTTERFLY ${symbolToken} 100 ${expiryToken} ${strikesToken} ${sideToken} @${signedCredit} LMT`
 }
 
 function getConnectionStatus(snapshot, quoteAgeMs, error) {
@@ -168,7 +250,9 @@ export default function App() {
   const [showSkew, setShowSkew] = useState(false)
   const [copiedTosKey, setCopiedTosKey] = useState(null)
   const [tosCopyError, setTosCopyError] = useState(null)
+  const [tosCopyErrorSection, setTosCopyErrorSection] = useState(null)
   const [tosPreviewOrder, setTosPreviewOrder] = useState(null)
+  const [tosPreviewSection, setTosPreviewSection] = useState(null)
   const copyResetRef = useRef(null)
 
   const fetchSnapshot = useCallback(async () => {
@@ -224,10 +308,12 @@ export default function App() {
     }
   }, [])
 
-  const copyTosOrder = useCallback(async (orderText, rowKey) => {
+  const copyTosOrder = useCallback(async (orderText, rowKey, section = 'vertical') => {
     if (!orderText) return
     setTosPreviewOrder(orderText)
+    setTosPreviewSection(section)
     setTosCopyError(null)
+    setTosCopyErrorSection(null)
     try {
       if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
         throw new Error('Clipboard unavailable')
@@ -242,6 +328,7 @@ export default function App() {
       }, 1200)
     } catch {
       setTosCopyError('Copy failed (clipboard blocked).')
+      setTosCopyErrorSection(section)
     }
   }, [])
 
@@ -323,14 +410,26 @@ export default function App() {
   const activeStrikeDepth = strike_window_size ?? strikeDepth
   const callCreditSpreads = spread_scanner.call_credit_spreads || []
   const putCreditSpreads = spread_scanner.put_credit_spreads || []
+  const callBwbCreditSpreads = spread_scanner.call_bwb_credit_spreads || []
+  const putBwbCreditSpreads = spread_scanner.put_bwb_credit_spreads || []
   const loRomPct = Math.min(spreadMinRomPct, spreadMaxRomPct)
   const hiRomPct = Math.max(spreadMinRomPct, spreadMaxRomPct)
   const filteredCallCreditSpreads = callCreditSpreads
     .map((s) => ({ ...s, rom_pct: getSpreadRomPct(s) }))
     .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
+    .sort(compareSpreadsByDistanceAsc)
   const filteredPutCreditSpreads = putCreditSpreads
     .map((s) => ({ ...s, rom_pct: getSpreadRomPct(s) }))
     .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
+    .sort(compareSpreadsByDistanceAsc)
+  const filteredCallBwbCreditSpreads = callBwbCreditSpreads
+    .map((s) => ({ ...s, rom_pct: getBwbRomPct(s) }))
+    .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
+    .sort(compareSpreadsByDistanceAsc)
+  const filteredPutBwbCreditSpreads = putBwbCreditSpreads
+    .map((s) => ({ ...s, rom_pct: getBwbRomPct(s) }))
+    .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
+    .sort(compareSpreadsByDistanceAsc)
   const skewMetrics = skew_analysis?.metrics || {}
   const skewNodes = skew_analysis?.nodes || {}
   const skewDiagnostics = skew_analysis?.diagnostics || {}
@@ -874,8 +973,8 @@ export default function App() {
               3-7%
             </button>
           </div>
-          {tosCopyError && <span className="tos-copy-error">{tosCopyError}</span>}
-          {tosPreviewOrder && (
+          {tosCopyError && tosCopyErrorSection === 'vertical' && <span className="tos-copy-error">{tosCopyError}</span>}
+          {tosPreviewOrder && tosPreviewSection === 'vertical' && (
             <div className="tos-preview">
               <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
             </div>
@@ -917,7 +1016,7 @@ export default function App() {
                           type="button"
                           className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
                           disabled={!tosOrder}
-                          onClick={() => copyTosOrder(tosOrder, rowKey)}
+                          onClick={() => copyTosOrder(tosOrder, rowKey, 'vertical')}
                         >
                           {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
                         </button>
@@ -963,7 +1062,117 @@ export default function App() {
                           type="button"
                           className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
                           disabled={!tosOrder}
-                          onClick={() => copyTosOrder(tosOrder, rowKey)}
+                          onClick={() => copyTosOrder(tosOrder, rowKey, 'vertical')}
+                        >
+                          {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="main-section">
+        <div className="section-head">
+          <span className="section-title">Far OTM broken-wing butterflies (credit)</span>
+          {tosCopyError && tosCopyErrorSection === 'bwb' && <span className="tos-copy-error">{tosCopyError}</span>}
+          {tosPreviewOrder && tosPreviewSection === 'bwb' && (
+            <div className="tos-preview">
+              <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
+            </div>
+          )}
+        </div>
+        <div className="split-panels">
+          <div>
+            <div className="sub-title">Call BWB credit spreads</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>U/M/L</th>
+                  <th>Mark</th>
+                  <th>ROM%</th>
+                  <th>Max Loss</th>
+                  <th>Max Profit</th>
+                  <th>BE</th>
+                  <th>POP (Δ)</th>
+                  <th>Dist</th>
+                  <th className="tos-action-col">TOS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCallBwbCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="9" className="empty-cell">No call BWB spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                ) : filteredCallBwbCreditSpreads.map((s) => {
+                  const rowKey = `bwb-c-${s.low_strike}-${s.mid_strike}-${s.high_strike}`
+                  const tosOrder = buildTosBwbOrder({ spread: s, side: 'call', symbol: activeSymbol, expiration })
+                  return (
+                    <tr key={rowKey}>
+                      <td>{formatPrice(s.low_strike)}/{formatPrice(s.mid_strike)}/{formatPrice(s.high_strike)}</td>
+                      <td>{formatPrice(s.mark_credit)}</td>
+                      <td>{formatPct(s.rom_pct)}</td>
+                      <td>{formatPrice(s.max_loss)}</td>
+                      <td>{formatPrice(s.max_profit)}</td>
+                      <td>{formatPrice(s.breakeven)}</td>
+                      <td>{formatPct(s.pop_delta_pct)}</td>
+                      <td>{formatPrice(s.distance_from_spx)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, rowKey, 'bwb')}
+                        >
+                          {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="sub-title">Put BWB credit spreads</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>L/M/U</th>
+                  <th>Mark</th>
+                  <th>ROM%</th>
+                  <th>Max Loss</th>
+                  <th>Max Profit</th>
+                  <th>BE</th>
+                  <th>POP (Δ)</th>
+                  <th>Dist</th>
+                  <th className="tos-action-col">TOS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPutBwbCreditSpreads.length === 0 ? (
+                  <tr><td colSpan="9" className="empty-cell">No put BWB spreads in ROM range {formatPct(loRomPct)}-{formatPct(hiRomPct)}</td></tr>
+                ) : filteredPutBwbCreditSpreads.map((s) => {
+                  const rowKey = `bwb-p-${s.low_strike}-${s.mid_strike}-${s.high_strike}`
+                  const tosOrder = buildTosBwbOrder({ spread: s, side: 'put', symbol: activeSymbol, expiration })
+                  return (
+                    <tr key={rowKey}>
+                      <td>{formatPrice(s.high_strike)}/{formatPrice(s.mid_strike)}/{formatPrice(s.low_strike)}</td>
+                      <td>{formatPrice(s.mark_credit)}</td>
+                      <td>{formatPct(s.rom_pct)}</td>
+                      <td>{formatPrice(s.max_loss)}</td>
+                      <td>{formatPrice(s.max_profit)}</td>
+                      <td>{formatPrice(s.breakeven)}</td>
+                      <td>{formatPct(s.pop_delta_pct)}</td>
+                      <td>{formatPrice(s.distance_from_spx)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === rowKey ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, rowKey, 'bwb')}
                         >
                           {copiedTosKey === rowKey ? 'Copied' : 'Copy'}
                         </button>
