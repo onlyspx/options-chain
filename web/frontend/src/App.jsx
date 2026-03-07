@@ -398,6 +398,8 @@ export default function App() {
     hot_strikes_call = [],
     hot_strikes_put = [],
     spread_scanner = {},
+    atr_analysis = {},
+    atr_target_spreads = {},
     skew_analysis = null,
     strikes = [],
   } = snapshot || {}
@@ -430,6 +432,41 @@ export default function App() {
     .map((s) => ({ ...s, rom_pct: getBwbRomPct(s) }))
     .filter((s) => s.rom_pct != null && s.rom_pct >= loRomPct && s.rom_pct <= hiRomPct)
     .sort(compareSpreadsByDistanceAsc)
+  const atrAnalysis = atr_analysis || {}
+  const atrTargetSpreads = atr_target_spreads || {}
+  const withAtrRom = (spread) => (spread ? { ...spread, rom_pct: getSpreadRomPct(spread) } : null)
+  const atrCallRows = [
+    {
+      key: 'atr-call-target-1',
+      band: '+1 ATR',
+      side: 'call',
+      spread: withAtrRom(atrTargetSpreads.call_plus_1atr),
+      targetLevel: atrAnalysis.plus_1atr_level,
+    },
+    {
+      key: 'atr-call-target-2',
+      band: '+2 ATR',
+      side: 'call',
+      spread: withAtrRom(atrTargetSpreads.call_plus_2atr),
+      targetLevel: atrAnalysis.plus_2atr_level,
+    },
+  ]
+  const atrPutRows = [
+    {
+      key: 'atr-put-target-1',
+      band: '-1 ATR',
+      side: 'put',
+      spread: withAtrRom(atrTargetSpreads.put_minus_1atr),
+      targetLevel: atrAnalysis.minus_1atr_level,
+    },
+    {
+      key: 'atr-put-target-2',
+      band: '-2 ATR',
+      side: 'put',
+      spread: withAtrRom(atrTargetSpreads.put_minus_2atr),
+      targetLevel: atrAnalysis.minus_2atr_level,
+    },
+  ]
   const skewMetrics = skew_analysis?.metrics || {}
   const skewNodes = skew_analysis?.nodes || {}
   const skewDiagnostics = skew_analysis?.diagnostics || {}
@@ -632,6 +669,133 @@ export default function App() {
           <label><input type="checkbox" defaultChecked readOnly /><span>open interest</span></label>
         </div>
       </header>
+
+      <section className="main-section">
+        <div className="section-head">
+          <span className="section-title">ATR(14) targets (prev close anchor)</span>
+          {tosCopyError && tosCopyErrorSection === 'atr' && <span className="tos-copy-error">{tosCopyError}</span>}
+          {tosPreviewOrder && tosPreviewSection === 'atr' && (
+            <div className="tos-preview">
+              <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
+            </div>
+          )}
+        </div>
+        <div className="atr-main">
+          <span className="atr-value">ATR14: {formatPrice(atrAnalysis.atr14)}</span>
+        </div>
+        <div className="atr-meta">
+          <span>Status: {String(atrAnalysis.status || 'unavailable').toUpperCase()}</span>
+          <span>Prev Close: {formatPrice(atrAnalysis.previous_close)}</span>
+          <span>+1 ATR: {formatPrice(atrAnalysis.plus_1atr_level)}</span>
+          <span>-1 ATR: {formatPrice(atrAnalysis.minus_1atr_level)}</span>
+          <span>+2 ATR: {formatPrice(atrAnalysis.plus_2atr_level)}</span>
+          <span>-2 ATR: {formatPrice(atrAnalysis.minus_2atr_level)}</span>
+          <span>As of: {atrAnalysis.asof_session || '--'}</span>
+        </div>
+        {atrAnalysis.status !== 'ok' && (
+          <div className="atr-note">
+            ATR unavailable{atrAnalysis.message ? `: ${atrAnalysis.message}` : '.'}
+          </div>
+        )}
+        <div className="split-panels">
+          <div>
+            <div className="sub-title">Call @ +1/+2 ATR</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Band</th>
+                  <th>Short/Long</th>
+                  <th>Mark</th>
+                  <th>ROM%</th>
+                  <th>POP (Δ)</th>
+                  <th>Dist</th>
+                  <th>Target</th>
+                  <th>Gap</th>
+                  <th className="tos-action-col">TOS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {atrCallRows.map((row) => {
+                  const spread = row.spread
+                  const tosOrder = spread
+                    ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
+                    : null
+                  return (
+                    <tr key={row.key}>
+                      <td>{row.band}</td>
+                      <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
+                      <td>{formatPrice(spread?.mark_credit)}</td>
+                      <td>{formatPct(spread?.rom_pct)}</td>
+                      <td>{formatPct(spread?.pop_delta_pct)}</td>
+                      <td>{formatPrice(spread?.distance_from_spx)}</td>
+                      <td>{formatPrice(row.targetLevel)}</td>
+                      <td>{formatPrice(spread?.atr_gap)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
+                        >
+                          {copiedTosKey === row.key ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="sub-title">Put @ -1/-2 ATR</div>
+            <table className="mini-table">
+              <thead>
+                <tr>
+                  <th>Band</th>
+                  <th>Short/Long</th>
+                  <th>Mark</th>
+                  <th>ROM%</th>
+                  <th>POP (Δ)</th>
+                  <th>Dist</th>
+                  <th>Target</th>
+                  <th>Gap</th>
+                  <th className="tos-action-col">TOS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {atrPutRows.map((row) => {
+                  const spread = row.spread
+                  const tosOrder = spread
+                    ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
+                    : null
+                  return (
+                    <tr key={row.key}>
+                      <td>{row.band}</td>
+                      <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
+                      <td>{formatPrice(spread?.mark_credit)}</td>
+                      <td>{formatPct(spread?.rom_pct)}</td>
+                      <td>{formatPct(spread?.pop_delta_pct)}</td>
+                      <td>{formatPrice(spread?.distance_from_spx)}</td>
+                      <td>{formatPrice(row.targetLevel)}</td>
+                      <td>{formatPrice(spread?.atr_gap)}</td>
+                      <td className="tos-action-col">
+                        <button
+                          type="button"
+                          className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
+                          disabled={!tosOrder}
+                          onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
+                        >
+                          {copiedTosKey === row.key ? 'Copied' : 'Copy'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
 
       <section className="main-section">
         <div className="section-head">

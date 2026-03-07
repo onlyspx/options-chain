@@ -9,6 +9,7 @@ import math
 from collections import deque
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from copy import deepcopy
 
 # Repo root and scripts dir so we can import config and get_option_chain (they use "from config import")
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -37,6 +38,16 @@ try:
 except ImportError:
     PublicApiClient = None
 
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
+try:
+    from supabase import create_client as create_supabase_client
+except ImportError:
+    create_supabase_client = None
+
 app = FastAPI(title="options-chain API")
 
 DEFAULT_SYMBOL = "SPX"
@@ -64,13 +75,22 @@ HOT_STRIKES_TOP_N = 8
 SKEW_GREEKS_WINDOW_STRIKES = 30
 SKEW_MIN_COVERAGE_WARN_PCT = 60.0
 GREEKS_FETCH_CHUNK_SIZE = 100
+ATR_PERIOD = 14
+ATR_HISTORY_LOOKBACK_SESSIONS = 80
+ATR_MEMORY_CACHE_SECONDS = 15 * 60
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 SUPPORTED_EXPIRY_SLOTS = {"0dte", "next1", "next2"}
+ATR_SOURCE_SYMBOL_OVERRIDES = {
+    "SPX": "^GSPC",
+    "NDX": "^NDX",
+}
 _snapshot_buffers = {}  # (symbol, expiration) -> deque[(iso_ts, strikes_slim: [{strike, put_vol, call_vol}])]
-_quote_cache_by_symbol = {}  # symbol -> {fetched_at, symbol_price, timestamp}
+_quote_cache_by_symbol = {}  # symbol -> {fetched_at, quote_snapshot}
 _chain_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_strike, timestamp}
 _greeks_cache_by_symbol_exp = {}  # (symbol, expiration) -> {fetched_at, by_osi, timestamp}
+_atr_cache_by_symbol = {}  # symbol -> {fetched_at, analysis}
+_supabase_client_cache = None
 
 
 def _norm_exp(exp):
@@ -324,20 +344,34 @@ def _windowed_strikes(by_strike, spx_price, atm_strikes: int = DEFAULT_STRIKE_DE
     return [by_strike[s] for s in strikes_list[lo:hi]]
 
 
-def _get_quote_price(client, now_utc: datetime, symbol: str, instrument_type):
-    cache_entry = _quote_cache_by_symbol.setdefault(symbol, {"fetched_at": None, "symbol_price": None, "timestamp": None})
+def _get_quote_snapshot(client, now_utc: datetime, symbol: str, instrument_type):
+    cache_entry = _quote_cache_by_symbol.setdefault(symbol, {"fetched_at": None, "quote_snapshot": None})
     fetched_at = cache_entry.get("fetched_at")
     if fetched_at is not None and (now_utc - fetched_at).total_seconds() < QUOTE_REFRESH_SECONDS:
-        return cache_entry.get("symbol_price"), cache_entry.get("timestamp")
+        cached = cache_entry.get("quote_snapshot") or {}
+        return dict(cached)
     quotes = client.get_quotes([OrderInstrument(symbol=symbol, type=instrument_type)])
     symbol_price = None
+    day_high = None
+    day_low = None
+    prev_close = None
     if quotes and len(quotes) > 0:
-        symbol_price = _decimal_float(getattr(quotes[0], "last", None))
+        quote = quotes[0]
+        symbol_price = _decimal_float(getattr(quote, "last", None))
+        day_high = _decimal_float(getattr(quote, "high", None))
+        day_low = _decimal_float(getattr(quote, "low", None))
+        prev_close = _decimal_float(getattr(quote, "close", None))
     ts = _iso_utc(now_utc)
+    quote_snapshot = {
+        "last": symbol_price,
+        "high": day_high,
+        "low": day_low,
+        "close": prev_close,
+        "timestamp": ts,
+    }
     cache_entry["fetched_at"] = now_utc
-    cache_entry["symbol_price"] = symbol_price
-    cache_entry["timestamp"] = ts
-    return symbol_price, ts
+    cache_entry["quote_snapshot"] = quote_snapshot
+    return dict(quote_snapshot)
 
 
 def _get_chain_data(client, now_utc: datetime, symbol: str, instrument_type, expiration: str):
@@ -366,6 +400,347 @@ def _get_chain_data(client, now_utc: datetime, symbol: str, instrument_type, exp
         "timestamp": ts,
     }
     return expiration, by_strike, ts
+
+
+def _atr_source_symbol(symbol: str):
+    return ATR_SOURCE_SYMBOL_OVERRIDES.get(symbol, symbol)
+
+
+def _get_supabase_secret_key():
+    return os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+
+def _get_supabase_client():
+    global _supabase_client_cache
+    if _supabase_client_cache is not None:
+        return _supabase_client_cache
+    if create_supabase_client is None:
+        return None
+    supabase_url = (os.getenv("SUPABASE_URL") or "").strip()
+    supabase_secret = (_get_supabase_secret_key() or "").strip()
+    if not supabase_url or not supabase_secret:
+        return None
+    try:
+        _supabase_client_cache = create_supabase_client(supabase_url, supabase_secret)
+    except Exception:
+        return None
+    return _supabase_client_cache
+
+
+def _supabase_get_cached_atr_row(symbol: str, session_date: str):
+    if not session_date:
+        return None
+    client = _get_supabase_client()
+    if client is None:
+        return None
+    try:
+        response = (
+            client.table("atr_cache_daily")
+            .select("*")
+            .eq("symbol", symbol)
+            .eq("session_date", session_date)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(response, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _supabase_get_recent_atr_rows(symbol: str, limit: int = 5):
+    client = _get_supabase_client()
+    if client is None:
+        return []
+    try:
+        response = (
+            client.table("atr_cache_daily")
+            .select("*")
+            .eq("symbol", symbol)
+            .order("session_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return getattr(response, "data", None) or []
+    except Exception:
+        return []
+
+
+def _supabase_upsert_atr_row(row_payload: dict):
+    client = _get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table("atr_cache_daily").upsert(row_payload, on_conflict="symbol,session_date").execute()
+        return True
+    except Exception:
+        return False
+
+
+def _fetch_daily_history_rows(source_symbol: str, now_utc: datetime, lookback_sessions: int = ATR_HISTORY_LOOKBACK_SESSIONS):
+    if yf is None:
+        return []
+    try:
+        history = yf.Ticker(source_symbol).history(period="1y", interval="1d", auto_adjust=False, actions=False)
+    except Exception:
+        return []
+    if history is None or history.empty:
+        return []
+
+    today = now_utc.date()
+    rows = []
+    for idx, bar in history.iterrows():
+        session_date = idx.date() if hasattr(idx, "date") else None
+        if session_date is None or session_date >= today:
+            continue
+        high = _decimal_float(bar.get("High"))
+        low = _decimal_float(bar.get("Low"))
+        close = _decimal_float(bar.get("Close"))
+        if high is None or low is None or close is None:
+            continue
+        rows.append(
+            {
+                "date": session_date,
+                "high": high,
+                "low": low,
+                "close": close,
+            }
+        )
+
+    if len(rows) > lookback_sessions + ATR_PERIOD + 10:
+        rows = rows[-(lookback_sessions + ATR_PERIOD + 10):]
+    return rows
+
+
+def _compute_wilder_atr_from_rows(rows: list[dict], period: int = ATR_PERIOD):
+    if not rows or len(rows) < (period + 1):
+        return None, None
+
+    true_ranges = []
+    for idx in range(1, len(rows)):
+        current = rows[idx]
+        prev_close = _decimal_float(rows[idx - 1].get("close"))
+        high = _decimal_float(current.get("high"))
+        low = _decimal_float(current.get("low"))
+        if prev_close is None or high is None or low is None:
+            continue
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        true_ranges.append(tr)
+
+    if len(true_ranges) < period:
+        return None, None
+
+    atr = sum(true_ranges[:period]) / period
+    for tr in true_ranges[period:]:
+        atr = ((atr * (period - 1)) + tr) / period
+
+    asof_date = rows[-1].get("date")
+    asof_session = asof_date.isoformat() if hasattr(asof_date, "isoformat") else None
+    return atr, asof_session
+
+
+def _build_atr_unavailable(source_symbol: str, message: str):
+    return {
+        "status": "unavailable",
+        "method": "wilder_atr14_completed_sessions",
+        "source": "yfinance",
+        "source_symbol": source_symbol,
+        "asof_session": None,
+        "previous_close": None,
+        "atr14": None,
+        "plus_1atr_level": None,
+        "minus_1atr_level": None,
+        "plus_2atr_level": None,
+        "minus_2atr_level": None,
+        "message": message,
+    }
+
+
+def _atr_analysis_from_cache_row(row: dict):
+    previous_close = _decimal_float(row.get("previous_close"))
+    atr14 = _decimal_float(row.get("atr14"))
+    if None in (previous_close, atr14):
+        return None
+    plus_1atr_level = _decimal_float(row.get("plus_1atr_level"))
+    minus_1atr_level = _decimal_float(row.get("minus_1atr_level"))
+    if plus_1atr_level is None:
+        plus_1atr_level = previous_close + atr14
+    if minus_1atr_level is None:
+        minus_1atr_level = previous_close - atr14
+    plus_2atr_level = previous_close + (2.0 * atr14)
+    minus_2atr_level = previous_close - (2.0 * atr14)
+    return {
+        "status": "ok",
+        "method": "wilder_atr14_completed_sessions",
+        "source": "yfinance",
+        "source_symbol": row.get("source_symbol"),
+        "asof_session": row.get("session_date"),
+        "previous_close": round(previous_close, 2),
+        "atr14": round(atr14, 2),
+        "plus_1atr_level": round(plus_1atr_level, 2),
+        "minus_1atr_level": round(minus_1atr_level, 2),
+        "plus_2atr_level": round(plus_2atr_level, 2),
+        "minus_2atr_level": round(minus_2atr_level, 2),
+    }
+
+
+def _pick_cached_atr_row(rows: list[dict], previous_close):
+    if not rows:
+        return None
+    target_close = _decimal_float(previous_close)
+    if target_close is None:
+        return rows[0]
+    best_row = None
+    best_gap = None
+    for row in rows:
+        row_close = _decimal_float(row.get("previous_close"))
+        if row_close is None:
+            continue
+        gap = abs(row_close - target_close)
+        if best_gap is None or gap < best_gap:
+            best_row = row
+            best_gap = gap
+    if best_row is not None and best_gap is not None and best_gap <= 0.02:
+        return best_row
+    return None
+
+
+def _atr_memory_cache_get(symbol: str, now_utc: datetime, previous_close):
+    entry = _atr_cache_by_symbol.get(symbol)
+    if not entry:
+        return None
+    fetched_at = entry.get("fetched_at")
+    if fetched_at is None or (now_utc - fetched_at).total_seconds() > ATR_MEMORY_CACHE_SECONDS:
+        return None
+    analysis = entry.get("analysis")
+    if not analysis:
+        return None
+    target_close = _decimal_float(previous_close)
+    cached_close = _decimal_float(analysis.get("previous_close"))
+    if target_close is not None and cached_close is not None and abs(target_close - cached_close) > 0.02:
+        return None
+    return deepcopy(analysis)
+
+
+def _atr_memory_cache_set(symbol: str, now_utc: datetime, analysis: dict):
+    _atr_cache_by_symbol[symbol] = {
+        "fetched_at": now_utc,
+        "analysis": deepcopy(analysis),
+    }
+
+
+def _compute_atr_analysis(symbol: str, quote_snapshot: dict, now_utc: datetime):
+    source_symbol = _atr_source_symbol(symbol)
+    previous_close = _decimal_float((quote_snapshot or {}).get("close"))
+
+    cached_memory = _atr_memory_cache_get(symbol, now_utc, previous_close)
+    if cached_memory is not None:
+        return cached_memory
+
+    recent_rows = _supabase_get_recent_atr_rows(symbol=symbol, limit=5)
+    cached_row = _pick_cached_atr_row(recent_rows, previous_close)
+    if cached_row:
+        cached_analysis = _atr_analysis_from_cache_row(cached_row)
+        if cached_analysis is not None:
+            _atr_memory_cache_set(symbol, now_utc, cached_analysis)
+            return cached_analysis
+
+    history_rows = _fetch_daily_history_rows(source_symbol=source_symbol, now_utc=now_utc)
+    if not history_rows:
+        analysis = _build_atr_unavailable(source_symbol, "Daily history unavailable.")
+        _atr_memory_cache_set(symbol, now_utc, analysis)
+        return analysis
+
+    atr14, asof_session = _compute_wilder_atr_from_rows(history_rows, period=ATR_PERIOD)
+    if atr14 is None or asof_session is None:
+        analysis = _build_atr_unavailable(source_symbol, "Insufficient history for ATR(14).")
+        _atr_memory_cache_set(symbol, now_utc, analysis)
+        return analysis
+
+    existing_row = _supabase_get_cached_atr_row(symbol=symbol, session_date=asof_session)
+    if existing_row:
+        existing_analysis = _atr_analysis_from_cache_row(existing_row)
+        if existing_analysis is not None:
+            _atr_memory_cache_set(symbol, now_utc, existing_analysis)
+            return existing_analysis
+
+    if previous_close is None:
+        previous_close = _decimal_float(history_rows[-1].get("close"))
+    if previous_close is None:
+        analysis = _build_atr_unavailable(source_symbol, "Previous close unavailable.")
+        _atr_memory_cache_set(symbol, now_utc, analysis)
+        return analysis
+
+    plus_1atr = previous_close + atr14
+    minus_1atr = previous_close - atr14
+    plus_2atr = previous_close + (2.0 * atr14)
+    minus_2atr = previous_close - (2.0 * atr14)
+    analysis = {
+        "status": "ok",
+        "method": "wilder_atr14_completed_sessions",
+        "source": "yfinance",
+        "source_symbol": source_symbol,
+        "asof_session": asof_session,
+        "previous_close": round(previous_close, 2),
+        "atr14": round(atr14, 2),
+        "plus_1atr_level": round(plus_1atr, 2),
+        "minus_1atr_level": round(minus_1atr, 2),
+        "plus_2atr_level": round(plus_2atr, 2),
+        "minus_2atr_level": round(minus_2atr, 2),
+    }
+    _atr_memory_cache_set(symbol, now_utc, analysis)
+
+    _supabase_upsert_atr_row(
+        {
+            "symbol": symbol,
+            "session_date": asof_session,
+            "source_symbol": source_symbol,
+            "previous_close": round(previous_close, 4),
+            "atr14": round(atr14, 4),
+            "plus_1atr_level": round(plus_1atr, 4),
+            "minus_1atr_level": round(minus_1atr, 4),
+            "computed_at": _iso_utc(now_utc),
+        }
+    )
+
+    return analysis
+
+
+def _spread_deterministic_key(spread):
+    short_strike = _decimal_float(spread.get("short_strike"))
+    long_strike = _decimal_float(spread.get("long_strike"))
+    short_token = f"{short_strike:.3f}" if short_strike is not None else "~"
+    long_token = f"{long_strike:.3f}" if long_strike is not None else "~"
+    return f"{short_token}|{long_token}"
+
+
+def _pick_atr_target_spread(spreads, target_level):
+    level = _decimal_float(target_level)
+    if level is None:
+        return None
+    if not spreads:
+        return None
+
+    def _sort_key(spread):
+        short_strike = _decimal_float(spread.get("short_strike"))
+        gap = abs(short_strike - level) if short_strike is not None else float("inf")
+        mark_credit = _decimal_float(spread.get("mark_credit")) or 0.0
+        distance = _decimal_float(spread.get("distance_from_spx"))
+        distance_key = distance if distance is not None else float("inf")
+        return (
+            gap,
+            -mark_credit,
+            distance_key,
+            _spread_deterministic_key(spread),
+        )
+
+    best = min(spreads, key=_sort_key)
+    best_short = _decimal_float(best.get("short_strike"))
+    gap = abs(best_short - level) if best_short is not None else None
+    selected = dict(best)
+    selected["atr_target_level"] = round(level, 2)
+    selected["atr_gap"] = round(gap, 2) if gap is not None else None
+    return selected
 
 
 def _compute_expected_move(by_strike, spx_price):
@@ -1164,7 +1539,9 @@ def _fetch_snapshot(
     )
     try:
         now_utc = _now_utc()
-        symbol_price, quote_ts = _get_quote_price(client, now_utc, symbol=symbol, instrument_type=instrument_type)
+        quote_snapshot = _get_quote_snapshot(client, now_utc, symbol=symbol, instrument_type=instrument_type)
+        symbol_price = _decimal_float(quote_snapshot.get("last"))
+        quote_ts = quote_snapshot.get("timestamp")
         exp_targets = _resolve_expiration_targets(client, symbol=symbol, instrument_type=instrument_type)
         if not exp_targets:
             raise HTTPException(status_code=502, detail=f"No {symbol} expirations")
@@ -1241,6 +1618,30 @@ def _fetch_snapshot(
             by_strike=by_strike,
             greeks_by_osi=greeks_by_osi,
         )
+        atr_analysis = _compute_atr_analysis(symbol=symbol, quote_snapshot=quote_snapshot, now_utc=now_utc)
+        atr_target_spreads = {
+            "call_plus_1atr": None,
+            "put_minus_1atr": None,
+            "call_plus_2atr": None,
+            "put_minus_2atr": None,
+        }
+        if atr_analysis.get("status") == "ok":
+            atr_target_spreads["call_plus_1atr"] = _pick_atr_target_spread(
+                spread_scanner.get("call_credit_spreads", []),
+                atr_analysis.get("plus_1atr_level"),
+            )
+            atr_target_spreads["put_minus_1atr"] = _pick_atr_target_spread(
+                spread_scanner.get("put_credit_spreads", []),
+                atr_analysis.get("minus_1atr_level"),
+            )
+            atr_target_spreads["call_plus_2atr"] = _pick_atr_target_spread(
+                spread_scanner.get("call_credit_spreads", []),
+                atr_analysis.get("plus_2atr_level"),
+            )
+            atr_target_spreads["put_minus_2atr"] = _pick_atr_target_spread(
+                spread_scanner.get("put_credit_spreads", []),
+                atr_analysis.get("minus_2atr_level"),
+            )
 
         skew_analysis = None
         if include_skew:
@@ -1288,6 +1689,8 @@ def _fetch_snapshot(
             "hot_strikes_call": hot_calls,
             "hot_strikes_put": hot_puts,
             "spread_scanner": spread_scanner,
+            "atr_analysis": atr_analysis,
+            "atr_target_spreads": atr_target_spreads,
             "skew_analysis": skew_analysis,
         }
     finally:
