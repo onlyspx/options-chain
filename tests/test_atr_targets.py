@@ -130,5 +130,33 @@ class AtrTargetsTests(unittest.TestCase):
         self.assertIsNone(analysis["minus_2atr_level"])
 
 
+class SnapshotAtrFlagTests(unittest.TestCase):
+    def setUp(self):
+        self.orig_fetch_snapshot = server_main._fetch_snapshot
+
+    def tearDown(self):
+        server_main._fetch_snapshot = self.orig_fetch_snapshot
+
+    def test_get_snapshot_disables_atr_by_default(self):
+        calls = []
+
+        def fake_fetch_snapshot(**kwargs):
+            calls.append(kwargs)
+            return {
+                "symbol": "SPX",
+                "expiration": "2026-03-06",
+                "timestamp": "2026-03-06T12:00:00Z",
+                "strikes": [],
+            }
+
+        server_main._fetch_snapshot = fake_fetch_snapshot
+
+        server_main.get_snapshot()
+        self.assertFalse(calls[-1]["include_atr"])
+
+        server_main.get_snapshot(include_atr=True)
+        self.assertTrue(calls[-1]["include_atr"])
+
+
 if __name__ == "__main__":
     unittest.main()

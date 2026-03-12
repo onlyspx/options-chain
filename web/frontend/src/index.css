@@ -431,7 +431,7 @@ body {
 }
 
 .section-controls select,
-.header-controls input,
+.header-controls input[type='number'],
 .spread-filters input {
   height: 28px;
   padding: 0 8px;
@@ -443,8 +443,15 @@ body {
   font-family: 'IBM Plex Mono', 'Courier New', monospace;
 }
 
-.header-controls input {
+.header-controls input[type='number'] {
   width: 70px;
+}
+
+.header-controls input[type='checkbox'] {
+  width: auto;
+  height: auto;
+  margin: 0;
+  accent-color: var(--positive);
 }
 
 .spread-filters input {

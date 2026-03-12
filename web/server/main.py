@@ -1501,6 +1501,7 @@ def _fetch_snapshot(
     expiry_mode: str = "dte",
     expiry_slot: str | None = None,
     strike_depth=None,
+    include_atr: bool = False,
     include_skew: bool = False,
 ):
     expiry_mode = expiry_mode.lower()
@@ -1618,30 +1619,33 @@ def _fetch_snapshot(
             by_strike=by_strike,
             greeks_by_osi=greeks_by_osi,
         )
-        atr_analysis = _compute_atr_analysis(symbol=symbol, quote_snapshot=quote_snapshot, now_utc=now_utc)
-        atr_target_spreads = {
-            "call_plus_1atr": None,
-            "put_minus_1atr": None,
-            "call_plus_2atr": None,
-            "put_minus_2atr": None,
-        }
-        if atr_analysis.get("status") == "ok":
-            atr_target_spreads["call_plus_1atr"] = _pick_atr_target_spread(
-                spread_scanner.get("call_credit_spreads", []),
-                atr_analysis.get("plus_1atr_level"),
-            )
-            atr_target_spreads["put_minus_1atr"] = _pick_atr_target_spread(
-                spread_scanner.get("put_credit_spreads", []),
-                atr_analysis.get("minus_1atr_level"),
-            )
-            atr_target_spreads["call_plus_2atr"] = _pick_atr_target_spread(
-                spread_scanner.get("call_credit_spreads", []),
-                atr_analysis.get("plus_2atr_level"),
-            )
-            atr_target_spreads["put_minus_2atr"] = _pick_atr_target_spread(
-                spread_scanner.get("put_credit_spreads", []),
-                atr_analysis.get("minus_2atr_level"),
-            )
+        atr_analysis = None
+        atr_target_spreads = {}
+        if include_atr:
+            atr_analysis = _compute_atr_analysis(symbol=symbol, quote_snapshot=quote_snapshot, now_utc=now_utc)
+            atr_target_spreads = {
+                "call_plus_1atr": None,
+                "put_minus_1atr": None,
+                "call_plus_2atr": None,
+                "put_minus_2atr": None,
+            }
+            if atr_analysis.get("status") == "ok":
+                atr_target_spreads["call_plus_1atr"] = _pick_atr_target_spread(
+                    spread_scanner.get("call_credit_spreads", []),
+                    atr_analysis.get("plus_1atr_level"),
+                )
+                atr_target_spreads["put_minus_1atr"] = _pick_atr_target_spread(
+                    spread_scanner.get("put_credit_spreads", []),
+                    atr_analysis.get("minus_1atr_level"),
+                )
+                atr_target_spreads["call_plus_2atr"] = _pick_atr_target_spread(
+                    spread_scanner.get("call_credit_spreads", []),
+                    atr_analysis.get("plus_2atr_level"),
+                )
+                atr_target_spreads["put_minus_2atr"] = _pick_atr_target_spread(
+                    spread_scanner.get("put_credit_spreads", []),
+                    atr_analysis.get("minus_2atr_level"),
+                )
 
         skew_analysis = None
         if include_skew:
@@ -1705,6 +1709,7 @@ def get_snapshot(
     expiry_mode: str = "dte",
     expiry_slot: str | None = None,
     strike_depth: str | None = None,
+    include_atr: bool = False,
     include_skew: bool = False,
 ):
     result = _fetch_snapshot(
@@ -1713,6 +1718,7 @@ def get_snapshot(
         expiry_mode=expiry_mode,
         expiry_slot=expiry_slot,
         strike_depth=strike_depth,
+        include_atr=include_atr,
         include_skew=include_skew,
     )
     snapshot_buffer = _snapshot_buffers.setdefault((result["symbol"], result["expiration"]), deque(maxlen=512))

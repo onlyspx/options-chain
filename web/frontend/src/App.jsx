@@ -9,6 +9,7 @@ const TOP_OI_N = 5
 const SECONDARY_HIGHLIGHT_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 const THEME_STORAGE_KEY = 'dashboardTheme'
+const ATR_VISIBILITY_STORAGE_KEY = 'showAtrTargets'
 const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX', 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN', 'IBIT', 'AVGO']
 const EXPIRY_OPTIONS = [
   { key: 'slot-0dte', label: '0dte', slot: '0dte', expKey: 'slot_0dte' },
@@ -231,11 +232,20 @@ function getInitialTheme() {
   return saved === 'light' || saved === 'dark' ? saved : 'dark'
 }
 
+function getInitialStoredBoolean(storageKey, defaultValue = false) {
+  if (typeof window === 'undefined') return defaultValue
+  const saved = window.localStorage.getItem(storageKey)
+  if (saved === 'true') return true
+  if (saved === 'false') return false
+  return defaultValue
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
   const [selectedExpirySlot, setSelectedExpirySlot] = useState('0dte')
   const [theme, setTheme] = useState(getInitialTheme)
+  const [showAtr, setShowAtr] = useState(() => getInitialStoredBoolean(ATR_VISIBILITY_STORAGE_KEY, false))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [lastSuccessAt, setLastSuccessAt] = useState(null)
@@ -264,6 +274,9 @@ export default function App() {
     if (showDelta && markLastMin > 0) {
       query.set('mark_last_min', String(markLastMin))
     }
+    if (showAtr) {
+      query.set('include_atr', '1')
+    }
     if (showSkew) {
       query.set('include_skew', '1')
     }
@@ -282,7 +295,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [markLastMin, selectedExpirySlot, selectedSymbol, showDelta, showSkew, strikeDepth])
+  }, [markLastMin, selectedExpirySlot, selectedSymbol, showAtr, showDelta, showSkew, strikeDepth])
 
   useEffect(() => {
     fetchSnapshot()
@@ -347,6 +360,11 @@ export default function App() {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme)
     }
   }, [theme])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(ATR_VISIBILITY_STORAGE_KEY, String(showAtr))
+  }, [showAtr])
 
   if (loading && !snapshot) {
     return (
@@ -605,6 +623,14 @@ export default function App() {
             <label>
               <input
                 type="checkbox"
+                checked={showAtr}
+                onChange={(e) => setShowAtr(e.target.checked)}
+              />
+              <span>Show ATR</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
                 checked={showSkew}
                 onChange={(e) => setShowSkew(e.target.checked)}
               />
@@ -670,132 +696,134 @@ export default function App() {
         </div>
       </header>
 
-      <section className="main-section">
-        <div className="section-head">
-          <span className="section-title">ATR(14) targets (prev close anchor)</span>
-          {tosCopyError && tosCopyErrorSection === 'atr' && <span className="tos-copy-error">{tosCopyError}</span>}
-          {tosPreviewOrder && tosPreviewSection === 'atr' && (
-            <div className="tos-preview">
-              <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
+      {showAtr && (
+        <section className="main-section">
+          <div className="section-head">
+            <span className="section-title">ATR(14) targets (prev close anchor)</span>
+            {tosCopyError && tosCopyErrorSection === 'atr' && <span className="tos-copy-error">{tosCopyError}</span>}
+            {tosPreviewOrder && tosPreviewSection === 'atr' && (
+              <div className="tos-preview">
+                <span className="tos-preview-label">TOS order:</span> {tosPreviewOrder}
+              </div>
+            )}
+          </div>
+          <div className="atr-main">
+            <span className="atr-value">ATR14: {formatPrice(atrAnalysis.atr14)}</span>
+          </div>
+          <div className="atr-meta">
+            <span>Status: {String(atrAnalysis.status || 'unavailable').toUpperCase()}</span>
+            <span>Prev Close: {formatPrice(atrAnalysis.previous_close)}</span>
+            <span>+1 ATR: {formatPrice(atrAnalysis.plus_1atr_level)}</span>
+            <span>-1 ATR: {formatPrice(atrAnalysis.minus_1atr_level)}</span>
+            <span>+2 ATR: {formatPrice(atrAnalysis.plus_2atr_level)}</span>
+            <span>-2 ATR: {formatPrice(atrAnalysis.minus_2atr_level)}</span>
+            <span>As of: {atrAnalysis.asof_session || '--'}</span>
+          </div>
+          {atrAnalysis.status !== 'ok' && (
+            <div className="atr-note">
+              ATR unavailable{atrAnalysis.message ? `: ${atrAnalysis.message}` : '.'}
             </div>
           )}
-        </div>
-        <div className="atr-main">
-          <span className="atr-value">ATR14: {formatPrice(atrAnalysis.atr14)}</span>
-        </div>
-        <div className="atr-meta">
-          <span>Status: {String(atrAnalysis.status || 'unavailable').toUpperCase()}</span>
-          <span>Prev Close: {formatPrice(atrAnalysis.previous_close)}</span>
-          <span>+1 ATR: {formatPrice(atrAnalysis.plus_1atr_level)}</span>
-          <span>-1 ATR: {formatPrice(atrAnalysis.minus_1atr_level)}</span>
-          <span>+2 ATR: {formatPrice(atrAnalysis.plus_2atr_level)}</span>
-          <span>-2 ATR: {formatPrice(atrAnalysis.minus_2atr_level)}</span>
-          <span>As of: {atrAnalysis.asof_session || '--'}</span>
-        </div>
-        {atrAnalysis.status !== 'ok' && (
-          <div className="atr-note">
-            ATR unavailable{atrAnalysis.message ? `: ${atrAnalysis.message}` : '.'}
+          <div className="split-panels">
+            <div>
+              <div className="sub-title">Call @ +1/+2 ATR</div>
+              <table className="mini-table">
+                <thead>
+                  <tr>
+                    <th>Band</th>
+                    <th>Short/Long</th>
+                    <th>Mark</th>
+                    <th>ROM%</th>
+                    <th>POP (Δ)</th>
+                    <th>Dist</th>
+                    <th>Target</th>
+                    <th>Gap</th>
+                    <th className="tos-action-col">TOS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {atrCallRows.map((row) => {
+                    const spread = row.spread
+                    const tosOrder = spread
+                      ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
+                      : null
+                    return (
+                      <tr key={row.key}>
+                        <td>{row.band}</td>
+                        <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
+                        <td>{formatPrice(spread?.mark_credit)}</td>
+                        <td>{formatPct(spread?.rom_pct)}</td>
+                        <td>{formatPct(spread?.pop_delta_pct)}</td>
+                        <td>{formatPrice(spread?.distance_from_spx)}</td>
+                        <td>{formatPrice(row.targetLevel)}</td>
+                        <td>{formatPrice(spread?.atr_gap)}</td>
+                        <td className="tos-action-col">
+                          <button
+                            type="button"
+                            className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
+                            disabled={!tosOrder}
+                            onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
+                          >
+                            {copiedTosKey === row.key ? 'Copied' : 'Copy'}
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <div className="sub-title">Put @ -1/-2 ATR</div>
+              <table className="mini-table">
+                <thead>
+                  <tr>
+                    <th>Band</th>
+                    <th>Short/Long</th>
+                    <th>Mark</th>
+                    <th>ROM%</th>
+                    <th>POP (Δ)</th>
+                    <th>Dist</th>
+                    <th>Target</th>
+                    <th>Gap</th>
+                    <th className="tos-action-col">TOS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {atrPutRows.map((row) => {
+                    const spread = row.spread
+                    const tosOrder = spread
+                      ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
+                      : null
+                    return (
+                      <tr key={row.key}>
+                        <td>{row.band}</td>
+                        <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
+                        <td>{formatPrice(spread?.mark_credit)}</td>
+                        <td>{formatPct(spread?.rom_pct)}</td>
+                        <td>{formatPct(spread?.pop_delta_pct)}</td>
+                        <td>{formatPrice(spread?.distance_from_spx)}</td>
+                        <td>{formatPrice(row.targetLevel)}</td>
+                        <td>{formatPrice(spread?.atr_gap)}</td>
+                        <td className="tos-action-col">
+                          <button
+                            type="button"
+                            className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
+                            disabled={!tosOrder}
+                            onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
+                          >
+                            {copiedTosKey === row.key ? 'Copied' : 'Copy'}
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        )}
-        <div className="split-panels">
-          <div>
-            <div className="sub-title">Call @ +1/+2 ATR</div>
-            <table className="mini-table">
-              <thead>
-                <tr>
-                  <th>Band</th>
-                  <th>Short/Long</th>
-                  <th>Mark</th>
-                  <th>ROM%</th>
-                  <th>POP (Δ)</th>
-                  <th>Dist</th>
-                  <th>Target</th>
-                  <th>Gap</th>
-                  <th className="tos-action-col">TOS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {atrCallRows.map((row) => {
-                  const spread = row.spread
-                  const tosOrder = spread
-                    ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
-                    : null
-                  return (
-                    <tr key={row.key}>
-                      <td>{row.band}</td>
-                      <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
-                      <td>{formatPrice(spread?.mark_credit)}</td>
-                      <td>{formatPct(spread?.rom_pct)}</td>
-                      <td>{formatPct(spread?.pop_delta_pct)}</td>
-                      <td>{formatPrice(spread?.distance_from_spx)}</td>
-                      <td>{formatPrice(row.targetLevel)}</td>
-                      <td>{formatPrice(spread?.atr_gap)}</td>
-                      <td className="tos-action-col">
-                        <button
-                          type="button"
-                          className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
-                          disabled={!tosOrder}
-                          onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
-                        >
-                          {copiedTosKey === row.key ? 'Copied' : 'Copy'}
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div>
-            <div className="sub-title">Put @ -1/-2 ATR</div>
-            <table className="mini-table">
-              <thead>
-                <tr>
-                  <th>Band</th>
-                  <th>Short/Long</th>
-                  <th>Mark</th>
-                  <th>ROM%</th>
-                  <th>POP (Δ)</th>
-                  <th>Dist</th>
-                  <th>Target</th>
-                  <th>Gap</th>
-                  <th className="tos-action-col">TOS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {atrPutRows.map((row) => {
-                  const spread = row.spread
-                  const tosOrder = spread
-                    ? buildTosVerticalOrder({ spread, side: row.side, symbol: activeSymbol, expiration })
-                    : null
-                  return (
-                    <tr key={row.key}>
-                      <td>{row.band}</td>
-                      <td>{spread ? `${formatPrice(spread.short_strike)}/${formatPrice(spread.long_strike)}` : '--'}</td>
-                      <td>{formatPrice(spread?.mark_credit)}</td>
-                      <td>{formatPct(spread?.rom_pct)}</td>
-                      <td>{formatPct(spread?.pop_delta_pct)}</td>
-                      <td>{formatPrice(spread?.distance_from_spx)}</td>
-                      <td>{formatPrice(row.targetLevel)}</td>
-                      <td>{formatPrice(spread?.atr_gap)}</td>
-                      <td className="tos-action-col">
-                        <button
-                          type="button"
-                          className={`btn-copy-tos${copiedTosKey === row.key ? ' copied' : ''}`}
-                          disabled={!tosOrder}
-                          onClick={() => copyTosOrder(tosOrder, row.key, 'atr')}
-                        >
-                          {copiedTosKey === row.key ? 'Copied' : 'Copy'}
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       <section className="main-section">
         <div className="section-head">
