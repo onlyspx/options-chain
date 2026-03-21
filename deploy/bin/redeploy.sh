@@ -5,6 +5,7 @@ APP_ROOT="${APP_ROOT:-/srv/spx0/current}"
 VENV_DIR="${VENV_DIR:-/srv/spx0/shared/venv}"
 SERVICE_NAME="${SERVICE_NAME:-spx0-web.service}"
 BRANCH_NAME="${BRANCH_NAME:-feat/spx0-prod}"
+SKIP_GIT_SYNC="${SKIP_GIT_SYNC:-0}"
 
 ensure_rollup_native() {
   local rollup_version=""
@@ -40,10 +41,14 @@ fi
 
 cd "$APP_ROOT"
 
-echo "Deploying branch $BRANCH_NAME in $APP_ROOT"
-git fetch --all --prune
-git checkout "$BRANCH_NAME"
-git pull --ff-only origin "$BRANCH_NAME"
+if [[ "$SKIP_GIT_SYNC" != "1" ]]; then
+  echo "Deploying branch $BRANCH_NAME in $APP_ROOT"
+  git fetch --all --prune
+  git checkout "$BRANCH_NAME"
+  git pull --ff-only origin "$BRANCH_NAME"
+else
+  echo "Deploying current working tree in $APP_ROOT (git sync skipped)"
+fi
 
 if [[ ! -d "$VENV_DIR" ]]; then
   python3 -m venv "$VENV_DIR"

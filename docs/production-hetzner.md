@@ -171,7 +171,25 @@ Also disable password SSH login once key-based login is confirmed.
 
 ## 12. Normal Deploy Flow
 
-For each deploy:
+For each deploy, use one of these two flows.
+
+### Current working flow
+
+This is the deploy path that works immediately with the current VPS setup, because the server does not need direct GitHub access:
+
+```bash
+bash deploy/bin/deploy_from_local.sh
+```
+
+That command:
+
+- rsyncs the repo from your Mac to the VPS
+- keeps `.env` and the shared venv on the server
+- runs the server-side build and service restart
+
+### Optional later flow
+
+If you later give the VPS direct GitHub access, you can run the server-side redeploy helper directly:
 
 ```bash
 cd /srv/spx0/current
@@ -180,7 +198,7 @@ APP_ROOT=/srv/spx0/current VENV_DIR=/srv/spx0/shared/venv bash deploy/bin/redepl
 
 That flow will:
 
-- pull `feat/spx0-prod`
+- optionally pull the selected branch when git sync is enabled
 - install Python dependencies
 - run `npm install` in `web/frontend`
 - install the matching Linux Rollup native package when needed
