@@ -7,9 +7,10 @@ import os
 import sys
 import math
 from collections import deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from copy import deepcopy
+from zoneinfo import ZoneInfo
 
 # Repo root and scripts dir so we can import config and get_option_chain (they use "from config import")
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -51,6 +52,7 @@ except ImportError:
 app = FastAPI(title="options-chain API")
 
 DEFAULT_SYMBOL = "SPX"
+STRADDLE_MONITOR_SYMBOL = "SPX"
 SUPPORTED_SYMBOLS = {
     "SPX": "INDEX",
     "NDX": "INDEX",
@@ -78,6 +80,13 @@ GREEKS_FETCH_CHUNK_SIZE = 100
 ATR_PERIOD = 14
 ATR_HISTORY_LOOKBACK_SESSIONS = 80
 ATR_MEMORY_CACHE_SECONDS = 15 * 60
+STRADDLE_MONITOR_DEFAULT_ROWS = 8
+STRADDLE_MONITOR_MAX_ROWS = 12
+STRADDLE_MONITOR_HISTORY_TABLE = "straddle_monitor_intraday"
+STRADDLE_MONITOR_HISTORY_DTES = (0, 1)
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+MARKET_OPEN_TIME = time(9, 30)
+MARKET_CLOSE_TIME = time(16, 0)
 SUPPORTED_DTES = {0, 1}
 SUPPORTED_EXPIRY_MODES = {"dte", "friday"}
 SUPPORTED_EXPIRY_SLOTS = {"0dte", "next1", "next2"}
@@ -213,6 +222,56 @@ def _pick_expiration(exp_targets: dict[str, str | None], expiry_mode: str, dte: 
     if expiry_mode == "friday":
         return exp_targets.get("friday")
     return exp_targets.get("dte1") if dte == 1 else exp_targets.get("dte0")
+
+
+def _coerce_row_limit(row_limit, default: int = STRADDLE_MONITOR_DEFAULT_ROWS, maximum: int = STRADDLE_MONITOR_MAX_ROWS):
+    if row_limit is None:
+        return default
+    try:
+        value = int(str(row_limit).strip())
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return min(value, maximum)
+
+
+def _as_utc(ts: datetime):
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _market_session_bounds(now_utc: datetime):
+    now_et = _as_utc(now_utc).astimezone(MARKET_TIMEZONE)
+    session_date = now_et.date()
+    session_start = datetime.combine(session_date, MARKET_OPEN_TIME, tzinfo=MARKET_TIMEZONE).astimezone(timezone.utc)
+    session_end = datetime.combine(session_date, MARKET_CLOSE_TIME, tzinfo=MARKET_TIMEZONE).astimezone(timezone.utc)
+    return session_start, session_end
+
+
+def _is_regular_market_hours(now_utc: datetime):
+    now_et = _as_utc(now_utc).astimezone(MARKET_TIMEZONE)
+    if now_et.weekday() > 4:
+        return False
+    open_dt = datetime.combine(now_et.date(), MARKET_OPEN_TIME, tzinfo=MARKET_TIMEZONE)
+    close_dt = datetime.combine(now_et.date(), MARKET_CLOSE_TIME, tzinfo=MARKET_TIMEZONE)
+    return open_dt <= now_et < close_dt
+
+
+def _floor_to_minute_utc(now_utc: datetime):
+    return _as_utc(now_utc).replace(second=0, microsecond=0)
+
+
+def _monitor_expirations_from_dates(normalized_dates: list[date], today: date, symbol: str, row_limit: int):
+    if not normalized_dates:
+        return []
+    available = []
+    date_set = set(normalized_dates)
+    if today in date_set and _allow_same_day_0dte(symbol, today):
+        available.append(today)
+    available.extend(exp for exp in normalized_dates if exp > today)
+    return [exp.isoformat() for exp in available[:row_limit]]
 
 
 def _decimal_float(v):
@@ -475,6 +534,40 @@ def _supabase_upsert_atr_row(row_payload: dict):
         return True
     except Exception:
         return False
+
+
+def _supabase_upsert_straddle_history_rows(rows_payload: list[dict]):
+    if not rows_payload:
+        return False
+    client = _get_supabase_client()
+    if client is None:
+        return False
+    try:
+        client.table(STRADDLE_MONITOR_HISTORY_TABLE).upsert(
+            rows_payload,
+            on_conflict="symbol,expiration,bucket_ts",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _supabase_get_straddle_history_rows(symbol: str, session_start_iso: str):
+    client = _get_supabase_client()
+    if client is None:
+        return []
+    try:
+        response = (
+            client.table(STRADDLE_MONITOR_HISTORY_TABLE)
+            .select("*")
+            .eq("symbol", symbol)
+            .gte("bucket_ts", session_start_iso)
+            .order("bucket_ts")
+            .execute()
+        )
+        return getattr(response, "data", None) or []
+    except Exception:
+        return []
 
 
 def _fetch_daily_history_rows(source_symbol: str, now_utc: datetime, lookback_sessions: int = ATR_HISTORY_LOOKBACK_SESSIONS):
@@ -1377,6 +1470,242 @@ def _compute_skew_analysis(
     }
 
 
+def _resolve_monitor_expirations(client, symbol: str, instrument_type, row_limit: int):
+    expirations = get_option_expirations(client, symbol, instrument_type=instrument_type)
+    if not expirations:
+        return []
+    parsed = []
+    for exp in expirations:
+        exp_str = _norm_exp(exp)
+        try:
+            parsed.append(date.fromisoformat(exp_str))
+        except ValueError:
+            continue
+    if not parsed:
+        return []
+    normalized_dates = sorted(set(parsed))
+    return _monitor_expirations_from_dates(
+        normalized_dates=normalized_dates,
+        today=date.today(),
+        symbol=symbol,
+        row_limit=row_limit,
+    )
+
+
+def _select_nearest_strike_row(by_strike, symbol_price):
+    strikes_list = sorted(by_strike.keys())
+    if not strikes_list:
+        return None, {}
+    if symbol_price is None:
+        strike = strikes_list[len(strikes_list) // 2]
+    else:
+        strike = min(strikes_list, key=lambda s: abs(s - symbol_price))
+    return strike, by_strike.get(strike, {})
+
+
+def _quote_change_fields(quote_snapshot: dict):
+    last = _decimal_float((quote_snapshot or {}).get("last"))
+    prev_close = _decimal_float((quote_snapshot or {}).get("close"))
+    change = None
+    change_pct = None
+    if last is not None and prev_close is not None:
+        change = round(last - prev_close, 2)
+        if prev_close:
+            change_pct = round(change / prev_close, 6)
+    return last, change, change_pct
+
+
+def _build_straddle_monitor_row(by_strike, greeks_by_osi, symbol_price, expiration: str):
+    days_to_expiry = _days_to_expiry(expiration)
+    strike, strike_row = _select_nearest_strike_row(by_strike, symbol_price)
+
+    call_bid = _decimal_float(strike_row.get("call_bid"))
+    call_ask = _decimal_float(strike_row.get("call_ask"))
+    put_bid = _decimal_float(strike_row.get("put_bid"))
+    put_ask = _decimal_float(strike_row.get("put_ask"))
+    call_mid = _mid(call_bid, call_ask)
+    put_mid = _mid(put_bid, put_ask)
+    straddle_mid = round(call_mid + put_mid, 2) if call_mid is not None and put_mid is not None else None
+    implied_move_pct = None
+    if straddle_mid is not None and symbol_price is not None and symbol_price > 0:
+        implied_move_pct = round(straddle_mid / symbol_price, 6)
+
+    call_greek = greeks_by_osi.get(strike_row.get("call_osi"), {}) if strike_row.get("call_osi") else {}
+    put_greek = greeks_by_osi.get(strike_row.get("put_osi"), {}) if strike_row.get("put_osi") else {}
+    call_iv = _decimal_float(call_greek.get("implied_volatility"))
+    put_iv = _decimal_float(put_greek.get("implied_volatility"))
+
+    row_iv = None
+    if call_iv is not None and put_iv is not None:
+        row_iv = (call_iv + put_iv) / 2.0
+    elif call_iv is not None:
+        row_iv = call_iv
+    elif put_iv is not None:
+        row_iv = put_iv
+
+    put_call_skew = None
+    if put_iv is not None and call_iv is not None and call_iv > 0:
+        put_call_skew = put_iv / call_iv
+
+    return {
+        "days_to_expiry": days_to_expiry,
+        "expiration": expiration,
+        "strike": _round_or_none(strike, 2),
+        "call_bid": _round_or_none(call_bid, 2),
+        "call_ask": _round_or_none(call_ask, 2),
+        "put_bid": _round_or_none(put_bid, 2),
+        "put_ask": _round_or_none(put_ask, 2),
+        "call_mid": _round_or_none(call_mid, 2),
+        "put_mid": _round_or_none(put_mid, 2),
+        "straddle_mid": _round_or_none(straddle_mid, 2),
+        "implied_move_points": _round_or_none(straddle_mid, 2),
+        "implied_move_pct": _round_or_none(implied_move_pct, 6),
+        "put_call_skew": _round_or_none(put_call_skew, 4),
+        "iv": _round_or_none(row_iv, 4),
+    }
+
+
+def _build_straddle_history_write_payload(row: dict, symbol: str, spot: float | None, bucket_ts: datetime):
+    if row.get("days_to_expiry") not in STRADDLE_MONITOR_HISTORY_DTES:
+        return None
+    straddle_mid = _decimal_float(row.get("straddle_mid"))
+    strike = _decimal_float(row.get("strike"))
+    if straddle_mid is None or strike is None or spot is None:
+        return None
+    return {
+        "symbol": symbol,
+        "expiration": row.get("expiration"),
+        "days_to_expiry": row.get("days_to_expiry"),
+        "strike": round(strike, 2),
+        "spot": round(spot, 2),
+        "straddle_mid": round(straddle_mid, 2),
+        "implied_move_pct": _round_or_none(_decimal_float(row.get("implied_move_pct")), 6),
+        "bucket_ts": bucket_ts.isoformat(),
+    }
+
+
+def _shape_straddle_history(rows: list[dict]):
+    history = {"0dte": [], "1dte": []}
+    for row in rows:
+        dte = row.get("days_to_expiry")
+        if dte not in STRADDLE_MONITOR_HISTORY_DTES:
+            continue
+        key = "0dte" if dte == 0 else "1dte"
+        point_ts = row.get("bucket_ts") or row.get("recorded_at")
+        straddle_mid = _decimal_float(row.get("straddle_mid"))
+        if point_ts is None or straddle_mid is None:
+            continue
+        history[key].append(
+            {
+                "timestamp": point_ts,
+                "value": round(straddle_mid, 2),
+                "spot": _round_or_none(_decimal_float(row.get("spot")), 2),
+                "strike": _round_or_none(_decimal_float(row.get("strike")), 2),
+                "expiration": row.get("expiration"),
+            }
+        )
+    return history
+
+
+def _fetch_straddle_monitor(row_limit=None):
+    row_limit = _coerce_row_limit(row_limit)
+    secret = get_api_secret()
+    account_id = get_account_id()
+    if not secret:
+        raise HTTPException(status_code=500, detail="PUBLIC_COM_SECRET not set")
+    if PublicApiClient is None:
+        raise HTTPException(status_code=500, detail="publicdotcom-py not installed")
+    account_id = _resolve_account_id(secret=secret, account_id=account_id)
+    client = PublicApiClient(
+        ApiKeyAuthConfig(api_secret_key=secret),
+        config=PublicApiClientConfiguration(default_account_number=account_id),
+    )
+    try:
+        now_utc = _now_utc()
+        spx_quote = _get_quote_snapshot(client, now_utc, symbol=STRADDLE_MONITOR_SYMBOL, instrument_type=InstrumentType.INDEX)
+        vix_quote = _get_quote_snapshot(client, now_utc, symbol="VIX", instrument_type=InstrumentType.INDEX)
+
+        expirations = _resolve_monitor_expirations(
+            client,
+            symbol=STRADDLE_MONITOR_SYMBOL,
+            instrument_type=InstrumentType.INDEX,
+            row_limit=row_limit,
+        )
+        if not expirations:
+            raise HTTPException(status_code=502, detail="No SPX expirations")
+
+        spot, spot_change, spot_change_pct = _quote_change_fields(spx_quote)
+        vix, vix_change, vix_change_pct = _quote_change_fields(vix_quote)
+
+        rows = []
+        history_writes = []
+        bucket_ts = _floor_to_minute_utc(now_utc)
+        latest_chain_ts = None
+
+        for expiration in expirations:
+            _, by_strike, chain_ts = _get_chain_data(
+                client,
+                now_utc,
+                symbol=STRADDLE_MONITOR_SYMBOL,
+                instrument_type=InstrumentType.INDEX,
+                expiration=expiration,
+            )
+            latest_chain_ts = chain_ts
+            strike, strike_row = _select_nearest_strike_row(by_strike, spot)
+            osi_symbols = [sym for sym in (strike_row.get("call_osi"), strike_row.get("put_osi")) if sym]
+            greeks_by_osi = _get_option_greeks_map(
+                client,
+                now_utc,
+                symbol=STRADDLE_MONITOR_SYMBOL,
+                expiration=expiration,
+                osi_symbols=osi_symbols,
+            )
+            row = _build_straddle_monitor_row(
+                by_strike=by_strike,
+                greeks_by_osi=greeks_by_osi,
+                symbol_price=spot,
+                expiration=expiration,
+            )
+            rows.append(row)
+            write_payload = _build_straddle_history_write_payload(
+                row=row,
+                symbol=STRADDLE_MONITOR_SYMBOL,
+                spot=spot,
+                bucket_ts=bucket_ts,
+            )
+            if write_payload is not None:
+                history_writes.append(write_payload)
+
+        if _is_regular_market_hours(now_utc):
+            _supabase_upsert_straddle_history_rows(history_writes)
+
+        session_start_utc, _ = _market_session_bounds(now_utc)
+        history_rows = _supabase_get_straddle_history_rows(
+            symbol=STRADDLE_MONITOR_SYMBOL,
+            session_start_iso=session_start_utc.isoformat(),
+        )
+        active_strike = rows[0].get("strike") if rows else None
+        return {
+            "symbol": STRADDLE_MONITOR_SYMBOL,
+            "spot": _round_or_none(spot, 2),
+            "spot_change": _round_or_none(spot_change, 2),
+            "spot_change_pct": _round_or_none(spot_change_pct, 6),
+            "vix": _round_or_none(vix, 2),
+            "vix_change": _round_or_none(vix_change, 2),
+            "vix_change_pct": _round_or_none(vix_change_pct, 6),
+            "active_strike": active_strike,
+            "updated_at": _iso_utc(now_utc),
+            "quote_timestamp": spx_quote.get("timestamp"),
+            "vix_timestamp": vix_quote.get("timestamp"),
+            "chain_timestamp": latest_chain_ts,
+            "rows": rows,
+            "history": _shape_straddle_history(history_rows),
+            "history_resolution_seconds": 60,
+        }
+    finally:
+        client.close()
+
+
 def _attach_pop_to_spreads(spreads, side: str, by_strike, greeks_by_osi, symbol_price, days_to_expiry):
     t_years = max(days_to_expiry or 0, 1) / 365.0
     sqrt_t = math.sqrt(t_years)
@@ -1743,6 +2072,11 @@ def get_snapshot(
                 s["delta_put"] = (s.get("put_vol") or 0) - (old.get("put_vol") or 0)
                 s["delta_call"] = (s.get("call_vol") or 0) - (old.get("call_vol") or 0)
     return result
+
+
+@app.get("/api/straddle-monitor")
+def get_straddle_monitor(rows: int | None = None):
+    return _fetch_straddle_monitor(row_limit=rows)
 
 
 # Serve static frontend if built

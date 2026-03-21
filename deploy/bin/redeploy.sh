@@ -63,7 +63,7 @@ ensure_rollup_native
 npm run build
 popd >/dev/null
 
-if systemctl list-unit-files | grep -q "^$SERVICE_NAME"; then
+if sudo systemctl status "$SERVICE_NAME" >/dev/null 2>&1; then
   sudo systemctl restart "$SERVICE_NAME"
   sudo systemctl status "$SERVICE_NAME" --no-pager
 else

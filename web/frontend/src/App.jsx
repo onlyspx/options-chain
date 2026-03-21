@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import StraddlePage from './StraddlePage'
 
 const API_SNAPSHOT = '/api/snapshot'
 const BAR_MAX_PX = 95
@@ -240,7 +241,20 @@ function getInitialStoredBoolean(storageKey, defaultValue = false) {
   return defaultValue
 }
 
+function isStraddlePath(pathname) {
+  if (typeof pathname !== 'string') return false
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  return normalized === '/straddle'
+}
+
 export default function App() {
+  if (typeof window !== 'undefined' && isStraddlePath(window.location.pathname)) {
+    return <StraddlePage />
+  }
+  return <OptionsDashboard />
+}
+
+function OptionsDashboard() {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
   const [selectedExpirySlot, setSelectedExpirySlot] = useState('0dte')
