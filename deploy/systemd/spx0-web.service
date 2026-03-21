@@ -1,0 +1,21 @@
+[Unit]
+Description=spx0.com FastAPI dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/spx0/current
+EnvironmentFile=/srv/spx0/shared/.env
+ExecStart=/srv/spx0/shared/venv/bin/uvicorn web.server.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
