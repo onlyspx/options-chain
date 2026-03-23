@@ -1,0 +1,14 @@
+[Unit]
+Description=spx0.com SPX straddle daily close capture
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/spx0/current
+EnvironmentFile=/srv/spx0/shared/.env
+ExecStart=/srv/spx0/shared/venv/bin/python3 /srv/spx0/current/scripts/capture_straddle_close.py
+StandardOutput=journal
+StandardError=journal

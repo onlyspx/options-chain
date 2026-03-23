@@ -91,6 +91,24 @@ Logs:
 journalctl -u spx0-web.service -f
 ```
 
+## 5b. Install The Straddle Close Timer
+
+If you want the `/straddle` page to persist daily 4:00 PM ET close snapshots, install the timer pair too:
+
+```bash
+sudo cp /srv/spx0/current/deploy/systemd/spx0-straddle-close.service /etc/systemd/system/spx0-straddle-close.service
+sudo cp /srv/spx0/current/deploy/systemd/spx0-straddle-close.timer /etc/systemd/system/spx0-straddle-close.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now spx0-straddle-close.timer
+sudo systemctl status spx0-straddle-close.timer --no-pager
+```
+
+Logs:
+
+```bash
+journalctl -u spx0-straddle-close.service -f
+```
+
 ## 6. Install Bootstrap Nginx
 
 Install the temporary HTTP config first. This lets the site respond on port 80 so Let's Encrypt can validate the domain.
@@ -218,5 +236,6 @@ The app should behave the same way it did on Vercel:
 
 - dashboard loads at `/`
 - API responds at `/api/snapshot`
+- straddle monitor loads at `/straddle`
 - no separate frontend host is required
 - `www.spx0.com` redirects to `https://spx0.com`

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import StraddlePage from './StraddlePage'
+import AppNav, { getActiveAppSection } from './AppNav'
 
 const API_SNAPSHOT = '/api/snapshot'
 const BAR_MAX_PX = 95
@@ -241,24 +242,33 @@ function getInitialStoredBoolean(storageKey, defaultValue = false) {
   return defaultValue
 }
 
-function isStraddlePath(pathname) {
-  if (typeof pathname !== 'string') return false
-  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
-  return normalized === '/straddle'
-}
-
 export default function App() {
-  if (typeof window !== 'undefined' && isStraddlePath(window.location.pathname)) {
-    return <StraddlePage />
+  const [theme, setTheme] = useState(getInitialTheme)
+  const activeSection = typeof window !== 'undefined' ? getActiveAppSection(window.location.pathname) : 'dashboard'
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.theme = theme
+    }
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    }
+  }, [theme])
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
+  }, [])
+
+  if (activeSection === 'straddle') {
+    return <StraddlePage theme={theme} onToggleTheme={toggleTheme} activeSection={activeSection} />
   }
-  return <OptionsDashboard />
+  return <OptionsDashboard theme={theme} onToggleTheme={toggleTheme} activeSection={activeSection} />
 }
 
-function OptionsDashboard() {
+function OptionsDashboard({ theme, onToggleTheme, activeSection }) {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
   const [selectedExpirySlot, setSelectedExpirySlot] = useState('0dte')
-  const [theme, setTheme] = useState(getInitialTheme)
   const [showAtr, setShowAtr] = useState(() => getInitialStoredBoolean(ATR_VISIBILITY_STORAGE_KEY, false))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -368,14 +378,6 @@ function OptionsDashboard() {
   }, [titleSymbol, titlePrice, loading, error])
 
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    document.documentElement.dataset.theme = theme
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
-    }
-  }, [theme])
-
-  useEffect(() => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem(ATR_VISIBILITY_STORAGE_KEY, String(showAtr))
   }, [showAtr])
@@ -385,7 +387,17 @@ function OptionsDashboard() {
       <div className="header">
         <div className="header-row">
           <span className="title">options-chain</span>
+          <AppNav activeSection={activeSection} />
           <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-pressed={theme === 'dark'}
+            onClick={onToggleTheme}
+            title="Toggle theme"
+          >
+            Theme: {theme === 'dark' ? 'Dark' : 'Light'}
+          </button>
           <span className="meta">Loading…</span>
         </div>
       </div>
@@ -397,7 +409,17 @@ function OptionsDashboard() {
       <div className="header">
         <div className="header-row">
           <span className="title">options-chain</span>
+          <AppNav activeSection={activeSection} />
           <span className="meta">{selectedSymbol} {selectedExpirySlot}</span>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-pressed={theme === 'dark'}
+            onClick={onToggleTheme}
+            title="Toggle theme"
+          >
+            Theme: {theme === 'dark' ? 'Dark' : 'Light'}
+          </button>
           <span className="status-pill error">Offline</span>
           <span className="error-msg">{error}</span>
           <button type="button" className="btn-refresh" onClick={fetchSnapshot}>Refresh</button>
@@ -580,6 +602,7 @@ function OptionsDashboard() {
       <header className="header">
         <div className="header-row">
           <span className="title">options-chain</span>
+          <AppNav activeSection={activeSection} />
           <div className="symbol-picker">
             {SYMBOL_OPTIONS.map((sym) => (
               <button
@@ -654,7 +677,7 @@ function OptionsDashboard() {
               type="button"
               className="theme-toggle"
               aria-pressed={theme === 'dark'}
-              onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+              onClick={onToggleTheme}
               title="Toggle theme"
             >
               Theme: {theme === 'dark' ? 'Dark' : 'Light'}

@@ -5,7 +5,7 @@
 `options-chain` is a Public.com options analysis project with:
 
 - Python scripts for quotes, chains, and account workflows
-- a FastAPI backend that serves `GET /api/snapshot`
+- a FastAPI backend that serves `GET /api/snapshot` and `GET /api/straddle-monitor`
 - a React frontend dashboard for multi-symbol options monitoring
 
 ## Local Setup
@@ -22,6 +22,9 @@ Create `.env` in the repo root (or copy from `.env.example`):
 
 - `PUBLIC_COM_SECRET` (required)
 - `PUBLIC_COM_ACCOUNT_ID` (recommended)
+- `DISCORD_WEBHOOK_URL` (required for daemon mode unless passed via CLI)
+- `SUPABASE_URL` (optional for straddle history persistence)
+- `SUPABASE_SERVICE_ROLE_KEY` (optional for straddle history persistence)
 
 If you do not know your account ID yet, run:
 
@@ -42,8 +45,15 @@ From repo root:
 ./run get_option_chain SPY
 ./run spx_volume_leaders
 ./run spx_volume_leaders --last-5-min
+./run spx_volume_daemon
+./run spx_volume_daemon --interval-min 1 --top 10
 ./run spx_spread_credit
+./run capture_straddle_close --force
 ```
+
+`spx_volume_daemon` runs only during market hours (Mon-Fri, 09:30-16:00 ET) and exits outside that window.
+In daemon mode, `--top` applies per side (up to N calls and up to N puts per post).
+Each daemon alert starts with SPX price, then per-side delta sections with merged `Δ` + `Vol` rows; `⭐` marks strikes that are in that side's overall top-5 by current volume.
 
 Or run scripts directly from the venv:
 
@@ -62,12 +72,20 @@ Open `http://localhost:8000`.
 The backend serves:
 
 - `GET /api/snapshot`
+- `GET /api/straddle-monitor`
 
 Key query params:
 
 - `symbol`: `SPX`, `QQQ`, `SPY`, `NDX`, `NVDA`, `TSLA`, `AAPL`, `MSFT`, `GOOGL`, `META`, `AMZN`, `IBIT`, `AVGO`
 - `expiry_slot`: `0dte`, `next1`, `next2`
 - legacy compatibility: `expiry_mode` + `dte`
+
+The straddle monitor route lives at `/straddle`.
+
+If `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are configured, the straddle monitor can persist:
+
+- 1-minute intraday history for 0DTE and 1DTE
+- daily 4:00 PM ET close snapshots for the visible near-term expiries
 
 ## Deploy To Vercel
 
