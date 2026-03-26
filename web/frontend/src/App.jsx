@@ -12,7 +12,7 @@ const SECONDARY_HIGHLIGHT_N = 5
 const MARK_LAST_OPTIONS = [0, 1, 5, 9, 15]
 const THEME_STORAGE_KEY = 'dashboardTheme'
 const ATR_VISIBILITY_STORAGE_KEY = 'showAtrTargets'
-const SYMBOL_OPTIONS = ['SPX', 'QQQ', 'SPY', 'NDX', 'NVDA', 'TSLA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'AMZN', 'IBIT', 'AVGO']
+const QUICK_SYMBOL_OPTIONS = ['SPX', 'SPY', 'QQQ', 'TLT', 'NVDA', 'AAPL']
 const EXPIRY_OPTIONS = [
   { key: 'slot-0dte', label: '0dte', slot: '0dte', expKey: 'slot_0dte' },
   { key: 'slot-next1', label: 'next1', slot: 'next1', expKey: 'slot_next1' },
@@ -92,6 +92,10 @@ function formatExpiryDateShort(isoDate) {
   } catch {
     return isoDate
   }
+}
+
+function normalizeSymbolInput(value) {
+  return String(value ?? '').trim().toUpperCase()
 }
 
 function getSpreadRomPct(spread) {
@@ -268,6 +272,7 @@ export default function App() {
 function OptionsDashboard({ theme, onToggleTheme, activeSection }) {
   const [snapshot, setSnapshot] = useState(null)
   const [selectedSymbol, setSelectedSymbol] = useState('SPX')
+  const [customSymbolInput, setCustomSymbolInput] = useState('')
   const [selectedExpirySlot, setSelectedExpirySlot] = useState('0dte')
   const [showAtr, setShowAtr] = useState(() => getInitialStoredBoolean(ATR_VISIBILITY_STORAGE_KEY, false))
   const [loading, setLoading] = useState(true)
@@ -338,11 +343,26 @@ function OptionsDashboard({ theme, onToggleTheme, activeSection }) {
   }, [snapshot])
 
   useEffect(() => {
+    if (QUICK_SYMBOL_OPTIONS.includes(selectedSymbol)) {
+      setCustomSymbolInput('')
+      return
+    }
+    setCustomSymbolInput(selectedSymbol)
+  }, [selectedSymbol])
+
+  useEffect(() => {
     return () => {
       if (copyResetRef.current) {
         clearTimeout(copyResetRef.current)
       }
     }
+  }, [])
+
+  const submitCustomSymbol = useCallback((rawValue) => {
+    const nextSymbol = normalizeSymbolInput(rawValue)
+    if (!nextSymbol) return
+    setCustomSymbolInput(nextSymbol)
+    setSelectedSymbol(nextSymbol)
   }, [])
 
   const copyTosOrder = useCallback(async (orderText, rowKey, section = 'vertical') => {
@@ -604,7 +624,7 @@ function OptionsDashboard({ theme, onToggleTheme, activeSection }) {
           <span className="title">options-chain</span>
           <AppNav activeSection={activeSection} />
           <div className="symbol-picker">
-            {SYMBOL_OPTIONS.map((sym) => (
+            {QUICK_SYMBOL_OPTIONS.map((sym) => (
               <button
                 key={sym}
                 type="button"
@@ -615,6 +635,27 @@ function OptionsDashboard({ theme, onToggleTheme, activeSection }) {
                 {sym}
               </button>
             ))}
+            <form
+              className="symbol-entry"
+              onSubmit={(e) => {
+                e.preventDefault()
+                submitCustomSymbol(customSymbolInput)
+              }}
+            >
+              <input
+                type="text"
+                className="symbol-input"
+                aria-label="Custom ticker"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                maxLength="15"
+                placeholder="Ticker"
+                title="Enter a ticker and press Enter"
+                value={customSymbolInput}
+                onChange={(e) => setCustomSymbolInput(e.target.value.toUpperCase())}
+              />
+            </form>
           </div>
           <div className="symbol-dte-grid">
             {EXPIRY_OPTIONS.map((opt) => {

@@ -76,7 +76,7 @@ The backend serves:
 
 Key query params:
 
-- `symbol`: `SPX`, `QQQ`, `SPY`, `NDX`, `NVDA`, `TSLA`, `AAPL`, `MSFT`, `GOOGL`, `META`, `AMZN`, `IBIT`, `AVGO`
+- `symbol`: any equity/ETF ticker, plus known index tickers such as `SPX`, `NDX`, `VIX`, `RUT`, `CBTX`
 - `expiry_slot`: `0dte`, `next1`, `next2`
 - legacy compatibility: `expiry_mode` + `dte`
 

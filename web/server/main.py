@@ -6,6 +6,7 @@ Run from repo root: uvicorn web.server.main:app --reload
 import os
 import sys
 import math
+import re
 from collections import deque
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -53,21 +54,8 @@ app = FastAPI(title="options-chain API")
 
 DEFAULT_SYMBOL = "SPX"
 STRADDLE_MONITOR_SYMBOL = "SPX"
-SUPPORTED_SYMBOLS = {
-    "SPX": "INDEX",
-    "NDX": "INDEX",
-    "SPY": "EQUITY",
-    "QQQ": "EQUITY",
-    "NVDA": "EQUITY",
-    "TSLA": "EQUITY",
-    "AAPL": "EQUITY",
-    "MSFT": "EQUITY",
-    "GOOGL": "EQUITY",
-    "META": "EQUITY",
-    "AMZN": "EQUITY",
-    "IBIT": "EQUITY",
-    "AVGO": "EQUITY",
-}
+INDEX_SYMBOLS = frozenset({"SPX", "NDX", "VIX", "RUT", "CBTX"})
+SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
 DEFAULT_STRIKE_DEPTH = 25  # default ATM ± N strikes shown in the main table
 MAX_STRIKE_DEPTH = 100
 QUOTE_REFRESH_SECONDS = 10
@@ -162,6 +150,22 @@ def _build_legacy_expiration_targets(normalized_dates: list[date], today: date):
         "dte1": dte1.isoformat(),
         "friday": friday.isoformat(),
     }
+
+
+def _normalize_symbol(symbol) -> str:
+    value = str(symbol or "").strip().upper()
+    if not value:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if not SYMBOL_PATTERN.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid symbol={value}; expected letters/numbers with optional '.' or '-'",
+        )
+    return value
+
+
+def _instrument_type_for_symbol(symbol: str):
+    return InstrumentType.INDEX if symbol in INDEX_SYMBOLS else InstrumentType.EQUITY
 
 
 def _resolve_requested_expiry_slot(expiry_slot: str | None, expiry_mode: str, dte: int):
@@ -2055,12 +2059,7 @@ def _fetch_snapshot(
             )
     expiry_slot_requested = _resolve_requested_expiry_slot(expiry_slot=expiry_slot, expiry_mode=expiry_mode, dte=dte)
 
-    symbol = symbol.upper()
-    if symbol not in SUPPORTED_SYMBOLS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported symbol={symbol}; expected one of {sorted(SUPPORTED_SYMBOLS)}",
-        )
+    symbol = _normalize_symbol(symbol)
     secret = get_api_secret()
     account_id = get_account_id()
     if not secret:
@@ -2068,11 +2067,7 @@ def _fetch_snapshot(
     if PublicApiClient is None:
         raise HTTPException(status_code=500, detail="publicdotcom-py not installed")
     account_id = _resolve_account_id(secret=secret, account_id=account_id)
-    instrument_type = (
-        InstrumentType.INDEX
-        if SUPPORTED_SYMBOLS[symbol] == "INDEX"
-        else InstrumentType.EQUITY
-    )
+    instrument_type = _instrument_type_for_symbol(symbol)
 
     client = PublicApiClient(
         ApiKeyAuthConfig(api_secret_key=secret),

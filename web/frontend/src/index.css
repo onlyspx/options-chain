@@ -347,6 +347,34 @@ body {
   align-items: center;
 }
 
+.symbol-entry {
+  display: inline-flex;
+  align-items: center;
+}
+
+.symbol-input {
+  width: 92px;
+  border: 1px solid var(--button-border);
+  background: var(--panel-2);
+  color: var(--button-text);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'IBM Plex Mono', 'Courier New', monospace;
+  text-transform: uppercase;
+}
+
+.symbol-input::placeholder {
+  color: var(--text-dim);
+}
+
+.symbol-input:focus {
+  outline: none;
+  border-color: var(--button-active-text);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--button-active-text) 18%, transparent);
+}
+
 .dte-btn {
   appearance: none;
   border: 1px solid var(--button-border);
@@ -1453,7 +1481,8 @@ body {
   }
 
   .app-nav-link,
-  .dte-btn {
+  .dte-btn,
+  .symbol-input {
     font-size: 11px;
     padding: 5px 8px;
   }
